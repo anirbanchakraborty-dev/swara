@@ -1,0 +1,20 @@
+/fixture/seeded.ly:3:2: error: Guile signaled an error for the expression beginning here
+#
+ (car '())
+In procedure car: Wrong type (expecting pair): ()
+/fixture/seeded.ly:150:15: error: unknown command: `\fooBar'
+  la la la la 
+              \fooBar la la la la
+/fixture/seeded.ly:210:1: error: syntax error, unexpected '}'
+
+}
+/fixture/seeded.ly:20:25: warning: bar check failed at: 7/8
+  c'8 d' e' f' g' a' b' 
+                        |
+/fixture/seeded.ly:216:87: warning: No string for pitch #<Pitch e,, > (given frets ())
+    \new TabStaff { \set TabStaff.stringTunings = \stringTuning <e, a, d g b e'> \mus 
+                                                                                      e,,4 }
+/fixture/seeded.ly:20:25: warning: bar check failed at: 7/8
+  c'8 d' e' f' g' a' b' 
+                        |
+fatal error: failed files: "/fixture/seeded.ly"

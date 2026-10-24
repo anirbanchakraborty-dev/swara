@@ -1,0 +1,5 @@
+-:2:2: error: Guile signaled an error for the expression beginning here
+#
+ (car '())
+In procedure car: Wrong type (expecting pair): ()
+fatal error: failed files: "-"

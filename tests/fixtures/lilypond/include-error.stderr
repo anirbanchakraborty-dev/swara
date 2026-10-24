@@ -1,0 +1,5 @@
+-:2:10: error: cannot find file: `missing-part.ily'
+(search path: `/opt/homebrew/Cellar/lilypond/2.26.0_1/share/lilypond/2.26.0/ly:/opt/homebrew/Cellar/lilypond/2.26.0_1/share/lilypond/2.26.0/ps:/opt/homebrew/Cellar/lilypond/2.26.0_1/share/lilypond/2.26.0/scm:/opt/homebrew/Cellar/lilypond/2.26.0_1/share/lilypond/2.26.0/fonts/otf/:/opt/homebrew/Cellar/lilypond/2.26.0_1/share/lilypond/2.26.0/fonts/svg/:/fixture:')
+\include 
+         "missing-part.ily"
+fatal error: failed files: "-"

@@ -1,0 +1,5 @@
+-:1: warning: no \version statement found, please add
+
+\version "2.26.0"
+
+for future compatibility

@@ -1,0 +1,5 @@
+3:error:Guile signaled an error
+20:warning:bar check failed
+150:error:unknown command
+210:error:syntax error
+216:warning:No string for pitch

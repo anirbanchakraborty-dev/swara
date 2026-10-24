@@ -1,0 +1,4 @@
+-:2:15: error: syntax error, unexpected '}'
+\markup "গান" 
+              }
+fatal error: failed files: "-"

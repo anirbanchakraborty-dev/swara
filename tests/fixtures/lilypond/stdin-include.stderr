@@ -1,0 +1,7 @@
+-:3:12: error: syntax error, unexpected '}'
+{ c'4 d' } 
+           }
+/fixture/stdin-include.ily:2:25: warning: bar check failed at: 3/4
+partMusic = { c'4 d' e' 
+                        | f' g' a' b' | }
+fatal error: failed files: "-"

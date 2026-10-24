@@ -1,0 +1,4 @@
+/fixture/programming-error.ly:2:84: programming error: cyclic dependency: calculation-in-progress encountered for NoteHead.X-offset
+{ \override NoteHead.X-offset = #(lambda (grob) (ly:grob-property grob 'X-offset)) 
+                                                                                   c'4 }
+/fixture/programming-error.ly:2:84: continuing, cross fingers

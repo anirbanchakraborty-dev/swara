@@ -1,0 +1,12 @@
+-:2:2: error: Guile signaled an error for the expression beginning here
+#
+ (define x #<foo>)
+-:2:13: Unknown # object: "#<"
+-:2:2: error: syntax error, unexpected EVENT_IDENTIFIER
+#
+ (define x #<foo>)
+-:2:13: error: Guile signaled an error for the expression beginning here
+#(define x #
+            <foo>)
+Unbound variable: <foo>
+fatal error: failed files: "-"

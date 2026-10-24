@@ -1,0 +1,4 @@
+-:2:17: error: syntax error, unexpected '}'
+{ c'4 d'4 }	
+                }
+fatal error: failed files: "-"

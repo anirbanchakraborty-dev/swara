@@ -1,0 +1,3 @@
+-:2:13: warning: bar check failed at: 3/4
+{ c'4 d' e' 
+            | f' g' a' b' | }

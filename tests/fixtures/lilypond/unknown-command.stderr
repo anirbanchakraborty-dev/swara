@@ -1,0 +1,7 @@
+-:2:7: error: unknown command: `\fooBar'
+{ c'4 
+      \fooBar d'4 }
+-:2:7: error: string outside of text script or \lyricmode
+{ c'4 
+      \fooBar d'4 }
+fatal error: failed files: "-"

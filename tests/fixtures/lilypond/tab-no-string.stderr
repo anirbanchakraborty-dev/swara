@@ -1,0 +1,3 @@
+/fixture/tab-no-string.ly:2:17: warning: No string for pitch #<Pitch e,, > (given frets ())
+\new TabStaff { 
+                e,,4 }
