@@ -1,0 +1,6 @@
+/target
+/bench/corpus/
+/bench/third-party/
+/.cargo/local.toml
+*.bak
+.DS_Store
