@@ -5,6 +5,7 @@ mod dist;
 mod dyn_grammar;
 mod gen_song;
 mod sha256;
+mod test_includes;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,6 +17,7 @@ const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
        cargo xtask broken verify
        cargo xtask dist --target <triple> --out <dir>
        cargo xtask check-queries
+       cargo xtask test-includes
        cargo xtask compare --name <n> [--commit <sha>] --lib <dylib> --symbol <sym>
                    [--inject-lib <dylib> --inject-symbol <sym> --inject-query <scm>] --out <json>";
 
@@ -40,6 +42,7 @@ fn main() -> ExitCode {
             report(dist::run(&root(), triple, Path::new(out)))
         }
         ["check-queries"] => report(check_queries::run(&root())),
+        ["test-includes"] => report(test_includes::run(&root())),
         ["compare", options @ ..] => compare(options),
         _ => {
             eprintln!("{USAGE}");
