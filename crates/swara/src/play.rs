@@ -1,18 +1,17 @@
-//! `swara play`: streams a MIDI file to a FluidSynth that is already running, as the commands its
-//! shell takes over TCP, each at its own moment. A player kept warm sounds the first note within a
-//! millisecond, where a fresh one spends about a second loading its soundfont, as
-//! `docs/spikes/playback.md` measured. Stopping is the plugin's job: it ends this process, then
-//! sends `gain 0` and `reset` itself.
+//! `swara play`: writes a MIDI file to its standard output as the commands FluidSynth's shell
+//! takes, each at its own moment. The plugin points that output at the standard input of a
+//! FluidSynth it keeps running, so a player kept warm sounds the first note within a millisecond,
+//! where a fresh one spends about a second loading its soundfont, as `docs/spikes/playback.md`
+//! measured. Stopping is the plugin's job: it ends this process, then sends `gain 0` and `reset`
+//! itself.
 
 mod smf;
 
 use std::fmt;
 use std::fs;
-use std::io::{self, Read, Write};
-use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpStream};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,35 +22,23 @@ use smf::TimedEvent;
 const DEFAULT_GAIN: f64 = 0.2;
 /// The highest gain FluidSynth accepts.
 const MAX_GAIN: f64 = 10.0;
-/// How long to wait, once `reset` is written, for the shell to close its side.
-const CLOSE_WAIT: Duration = Duration::from_secs(1);
 
 /// Why a playback ended early.
 #[derive(Debug)]
 pub enum PlayError {
-    /// Nothing listens on the port, so no player is running there.
-    Refused(SocketAddr),
     /// The file could not be read, or is not a MIDI file this can play.
     File(String),
-    /// The connection failed after it opened.
+    /// Writing to FluidSynth failed.
     Io(io::Error),
-}
-
-impl PlayError {
-    /// The exit status: 3 when no player is running, so the plugin knows to start one.
-    fn code(&self) -> u8 {
-        match self {
-            PlayError::Refused(_) => 3,
-            PlayError::File(_) | PlayError::Io(_) => 1,
-        }
-    }
 }
 
 impl fmt::Display for PlayError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            PlayError::Refused(addr) => write!(f, "no player is listening on {addr}"),
             PlayError::File(message) => f.write_str(message),
+            PlayError::Io(error) if error.kind() == io::ErrorKind::BrokenPipe => {
+                f.write_str("FluidSynth has stopped reading")
+            }
             PlayError::Io(error) => write!(f, "{error}"),
         }
     }
@@ -59,26 +46,25 @@ impl fmt::Display for PlayError {
 
 /// `swara play`, given the arguments after `play`.
 pub fn main(args: &[&str]) -> ExitCode {
-    let Some((port, gain, file)) = parse(args) else {
+    let Some((gain, file)) = parse(args) else {
         eprintln!("{}", crate::USAGE);
         return ExitCode::from(2);
     };
-    match play(port, gain, Path::new(file)) {
+    match play(gain, Path::new(file), &mut io::stdout().lock()) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("swara play: {error}");
-            ExitCode::from(error.code())
+            ExitCode::FAILURE
         }
     }
 }
 
-/// The port, the gain and the file, with the flags in any order.
-fn parse<'a>(args: &[&'a str]) -> Option<(u16, f64, &'a str)> {
-    let (mut port, mut gain, mut file) = (None, DEFAULT_GAIN, None);
+/// The gain and the file, in either order.
+fn parse<'a>(args: &[&'a str]) -> Option<(f64, &'a str)> {
+    let (mut gain, mut file) = (DEFAULT_GAIN, None);
     let mut args = args.iter();
     while let Some(&arg) = args.next() {
         match arg {
-            "--port" => port = Some(args.next()?.parse().ok().filter(|&port: &u16| port != 0)?),
             "--gain" => {
                 let valid = |gain: &f64| (0.0..=MAX_GAIN).contains(gain);
                 gain = args.next()?.parse().ok().filter(valid)?;
@@ -87,60 +73,34 @@ fn parse<'a>(args: &[&'a str]) -> Option<(u16, f64, &'a str)> {
             _ => return None,
         }
     }
-    Some((port?, gain, file?))
+    Some((gain, file?))
 }
 
-/// Reads `file`, then streams it to the player on `port` at `gain`. A file it cannot play fails
-/// before the player is touched.
-pub fn play(port: u16, gain: f64, file: &Path) -> Result<(), PlayError> {
+/// Reads `file`, then streams it to `out` at `gain`. A file it cannot play fails before anything
+/// is written.
+pub fn play(gain: f64, file: &Path, out: &mut impl Write) -> Result<(), PlayError> {
     let unreadable =
         |error: &dyn fmt::Display| PlayError::File(format!("{}: {error}", file.display()));
     let bytes = fs::read(file).map_err(|e| unreadable(&e))?;
     let events = smf::read_smf(&bytes).map_err(|e| unreadable(&e))?;
-    stream(&events, SocketAddr::from((Ipv4Addr::LOCALHOST, port)), gain)
+    stream(&events, out, gain).map_err(PlayError::Io)
 }
 
-/// Streams `events` to the shell at `addr`: the gain first, then each event at its moment counted
-/// from when the connection opened, then `reset`. Returns once the shell has closed its side, or
-/// after `CLOSE_WAIT`.
-pub fn stream(events: &[TimedEvent], addr: SocketAddr, gain: f64) -> Result<(), PlayError> {
-    let mut conn = TcpStream::connect(addr).map_err(|error| match error.kind() {
-        io::ErrorKind::ConnectionRefused => PlayError::Refused(addr),
-        _ => PlayError::Io(error),
-    })?;
-    // Small writes must leave at once. Nagle's algorithm would hold each back for an acknowledgement.
-    conn.set_nodelay(true).map_err(PlayError::Io)?;
-    let closed = drain(&conn).map_err(PlayError::Io)?;
-    let origin = Instant::now();
-    let mut write = || -> io::Result<()> {
-        conn.write_all(format!("gain {gain}\n").as_bytes())?;
-        for event in events {
-            wait_until(origin + event.at);
-            conn.write_all(format!("{}\n", smf::shell_line(&event.event)).as_bytes())?;
-        }
-        conn.write_all(b"reset\n")?;
-        conn.shutdown(Shutdown::Write)
+/// Streams `events` to `out`: the gain first, then each event at its moment counted from the start,
+/// then `reset`. Each command goes out in a single write of one whole line, because the plugin
+/// writes its own commands to the same pipe, and a write that small lands in one piece.
+pub fn stream(events: &[TimedEvent], out: &mut impl Write, gain: f64) -> io::Result<()> {
+    let mut send = |line: String| -> io::Result<()> {
+        out.write_all(line.as_bytes())?;
+        out.flush()
     };
-    write().map_err(PlayError::Io)?;
-    // Closing a socket with data still unread can reset the connection, and a reset can drop
-    // commands the shell has not read yet, `reset` among them. Once the shell has read to the end
-    // it closes its side, and nothing is left unread.
-    let _ = closed.recv_timeout(CLOSE_WAIT);
-    Ok(())
-}
-
-/// Reads and discards what the shell sends, a prompt for every command, for as long as the
-/// connection is open. An unread socket fills, and the shell then stops reading. The receiver
-/// hears when the shell has closed its side.
-fn drain(conn: &TcpStream) -> io::Result<mpsc::Receiver<()>> {
-    let mut answers = conn.try_clone()?;
-    let (closed, receiver) = mpsc::channel();
-    thread::spawn(move || {
-        let mut sink = [0; 4096];
-        while matches!(answers.read(&mut sink), Ok(read) if read > 0) {}
-        let _ = closed.send(());
-    });
-    Ok(receiver)
+    let origin = Instant::now();
+    send(format!("gain {gain}\n"))?;
+    for event in events {
+        wait_until(origin + event.at);
+        send(format!("{}\n", smf::shell_line(&event.event)))?;
+    }
+    send("reset\n".to_owned())
 }
 
 /// Waits for `due` without spinning for long. On macOS a sleep can end up to half its length late,
@@ -163,10 +123,6 @@ fn wait_until(due: Instant) {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{BufRead, BufReader};
-    use std::net::TcpListener;
-    use std::thread::JoinHandle;
-
     use super::smf::Event;
     use super::*;
     use crate::testing::Scratch;
@@ -187,43 +143,33 @@ mod tests {
         }
     }
 
-    /// Accepts one connection, writes `answer` back after each line it receives, as the shell
-    /// answers each command with its prompt, and returns each line with the time it arrived.
-    fn listen(answer: Vec<u8>) -> (SocketAddr, JoinHandle<Vec<(String, Instant)>>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let handle = thread::spawn(move || {
-            let (conn, _) = listener.accept().unwrap();
-            let mut answers = conn.try_clone().unwrap();
-            let mut lines = Vec::new();
-            for line in BufReader::new(conn).lines() {
-                let Ok(line) = line else { break };
-                lines.push((line, Instant::now()));
-                if answers.write_all(&answer).is_err() {
-                    break;
-                }
-            }
-            lines
-        });
-        (addr, handle)
+    /// Stands in for the pipe to FluidSynth: keeps each write it is given, with the time it came.
+    #[derive(Default)]
+    struct Recorder(Vec<(String, Instant)>);
+
+    impl Write for Recorder {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0
+                .push((String::from_utf8(buf.to_vec()).unwrap(), Instant::now()));
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
-    #[test]
-    fn connection_refused_exits_3() {
-        let scratch = Scratch::new("play-refused");
-        let file = scratch.path().join("song.midi");
-        fs::write(&file, MIDDLE_C).unwrap();
-        // A port just let go of has nothing listening on it.
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let port = port.to_string();
-        assert_eq!(
-            main(&["--port", &port, file.to_str().unwrap()]),
-            ExitCode::from(3)
-        );
+    /// A pipe whose reader has gone, as when FluidSynth has exited.
+    struct Gone;
+
+    impl Write for Gone {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -248,85 +194,91 @@ mod tests {
                 },
             ),
         ];
-        let (addr, handle) = listen(Vec::new());
+        let mut out = Recorder::default();
         let start = Instant::now();
-        stream(&events, addr, DEFAULT_GAIN).unwrap();
-        let got = handle.join().unwrap();
-        let lines: Vec<&str> = got.iter().map(|(line, _)| line.as_str()).collect();
+        stream(&events, &mut out, DEFAULT_GAIN).unwrap();
+        let writes: Vec<&str> = out.0.iter().map(|(text, _)| text.as_str()).collect();
         let expected = [
-            "gain 0.2",
-            "prog 0 24",
-            "noteon 0 60 100",
-            "noteoff 0 60",
-            "noteon 1 64 80",
-            "reset",
+            "gain 0.2\n",
+            "prog 0 24\n",
+            "noteon 0 60 100\n",
+            "noteoff 0 60\n",
+            "noteon 1 64 80\n",
+            "reset\n",
         ];
-        assert_eq!(lines, expected);
-        for (event, (line, arrived)) in events.iter().zip(&got[1..]) {
-            let after = *arrived - start;
+        assert_eq!(writes, expected);
+        for (event, (line, written)) in events.iter().zip(&out.0[1..]) {
+            let after = *written - start;
             assert!(
                 after >= event.at,
-                "{line} arrived after {after:?}, due at {:?}",
+                "{line:?} written after {after:?}, due at {:?}",
                 event.at
             );
             let bound = event.at + Duration::from_millis(200);
             assert!(
                 after < bound,
-                "{line} arrived after {after:?}, due at {:?}",
+                "{line:?} written after {after:?}, due at {:?}",
                 event.at
             );
         }
 
-        let (addr, handle) = listen(Vec::new());
-        stream(&events[..1], addr, 0.5).unwrap();
-        assert_eq!(handle.join().unwrap()[0].0, "gain 0.5");
+        let mut out = Recorder::default();
+        stream(&events[..1], &mut out, 0.5).unwrap();
+        assert_eq!(out.0[0].0, "gain 0.5\n");
     }
 
-    /// A shell that answers each command with 64 KiB fills both socket buffers within a few
-    /// commands unless its answers are read, and then stops reading.
     #[test]
-    fn drains_what_the_shell_sends() {
-        let events: Vec<TimedEvent> = (0..1024u16)
-            .map(|i| {
-                at(
-                    0,
-                    Event::NoteOff {
-                        ch: 0,
-                        key: (i % 128) as u8,
-                    },
-                )
-            })
-            .collect();
-        let (addr, handle) = listen(vec![b'>'; 64 * 1024]);
-        let (done, finished) = mpsc::channel();
-        thread::spawn(move || {
-            let _ = done.send(stream(&events, addr, DEFAULT_GAIN).is_ok());
-        });
-        let outcome = finished.recv_timeout(Duration::from_secs(10));
-        assert_eq!(outcome, Ok(true), "the stream stalled or failed");
-        let lines = handle.join().unwrap();
-        assert_eq!(lines.len(), 1026, "the shell read {} lines", lines.len());
-        assert_eq!(lines[1025].0, "reset");
+    fn a_file_it_cannot_read_sends_nothing() {
+        let scratch = Scratch::new("play-unreadable");
+        let mut out = Recorder::default();
+        let missing = scratch.path().join("missing.midi");
+        let error = play(DEFAULT_GAIN, &missing, &mut out).unwrap_err();
+        assert!(matches!(error, PlayError::File(_)), "{error}");
+        let not_midi = scratch.path().join("song.midi");
+        fs::write(&not_midi, b"not a MIDI file").unwrap();
+        assert!(matches!(
+            play(DEFAULT_GAIN, &not_midi, &mut out),
+            Err(PlayError::File(_))
+        ));
+        assert!(out.0.is_empty(), "{:?}", out.0);
+    }
+
+    #[test]
+    fn plays_a_file() {
+        let scratch = Scratch::new("play-file");
+        let file = scratch.path().join("song.midi");
+        fs::write(&file, MIDDLE_C).unwrap();
+        let mut out = Recorder::default();
+        play(DEFAULT_GAIN, &file, &mut out).unwrap();
+        let writes: Vec<&str> = out.0.iter().map(|(text, _)| text.as_str()).collect();
+        assert_eq!(writes[0], "gain 0.2\n");
+        assert_eq!(writes[1], "noteon 0 60 100\n");
+        assert_eq!(writes[writes.len() - 1], "reset\n");
+    }
+
+    #[test]
+    fn a_player_that_has_gone_is_named() {
+        let scratch = Scratch::new("play-gone");
+        let file = scratch.path().join("song.midi");
+        fs::write(&file, MIDDLE_C).unwrap();
+        let error = play(DEFAULT_GAIN, &file, &mut Gone).unwrap_err();
+        assert_eq!(error.to_string(), "FluidSynth has stopped reading");
     }
 
     #[test]
     fn flags_come_in_any_order() {
-        assert_eq!(
-            parse(&["--port", "9800", "a.midi"]),
-            Some((9800, DEFAULT_GAIN, "a.midi"))
-        );
-        assert_eq!(
-            parse(&["--gain", "0.5", "--port", "9800", "a.midi"]),
-            Some((9800, 0.5, "a.midi"))
-        );
+        assert_eq!(parse(&["a.midi"]), Some((DEFAULT_GAIN, "a.midi")));
+        assert_eq!(parse(&["--gain", "0.5", "a.midi"]), Some((0.5, "a.midi")));
+        assert_eq!(parse(&["a.midi", "--gain", "0.5"]), Some((0.5, "a.midi")));
         for bad in [
-            &["a.midi"][..],
-            &["--port", "9800"],
-            &["--port", "0", "a.midi"],
-            &["--port", "9800", "--gain", "11", "a.midi"],
-            &["--port", "9800", "--gain", "NaN", "a.midi"],
-            &["--port", "9800", "a.midi", "b.midi"],
-            &["--port", "9800", "--loud", "a.midi"],
+            &[][..],
+            &["--gain", "0.5"],
+            &["--gain"],
+            &["--port", "9800", "a.midi"],
+            &["--gain", "11", "a.midi"],
+            &["--gain", "NaN", "a.midi"],
+            &["a.midi", "b.midi"],
+            &["--loud", "a.midi"],
         ] {
             assert_eq!(parse(bad), None, "{bad:?}");
         }

@@ -25,7 +25,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: swara lsp
        swara format [--indent <n>]
        swara info
-       swara play --port <p> [--gain <g>] <file.midi>
+       swara play [--gain <g>] <file.midi>
        swara --version";
 
 fn main() -> ExitCode {

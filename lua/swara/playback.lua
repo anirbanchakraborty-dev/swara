@@ -1,7 +1,9 @@
--- Plays the MIDI file of a buffer's last build through FluidSynth, by the route chosen in
--- `docs/spikes/playback.md`. FluidSynth is started once, with its command shell on a local port,
--- and kept running with the soundfont loaded. Each play is a `swara play` process that streams the
--- file's events to that port in time.
+-- Plays the MIDI file of a buffer's last build through FluidSynth. FluidSynth is started once and
+-- kept running with the soundfont loaded, reading commands from a pipe this plugin holds open as its
+-- standard input. Each play is a `swara play` process whose output is that same pipe, so it writes
+-- the file's events straight to FluidSynth in time. FluidSynth opens no network port this way. Its
+-- own command port listens on every network interface, which is why the plugin does not use it.
+-- `docs/spikes/playback.md` has the measurements behind both routes.
 
 local config = require('swara.config')
 
@@ -10,23 +12,21 @@ local M = {}
 -- MuseScore 4's bundled General MIDI soundfont, used when the options name none.
 local MS_BASIC = '/Applications/MuseScore 4.app/Contents/Resources/sound/MS Basic.sf3'
 
--- How often a refused connection to a starting player is tried again.
-local RETRY_MS = 50
--- How long a program that took the connection may stay silent before its port counts as taken.
-local SILENT_MS = 2000
--- How long FluidSynth may take to open its port. It opened after 1,056 ms in the spike.
+-- How long FluidSynth may take to answer once started. It answered after about 1,550 ms with
+-- MuseScore's soundfont.
 local OPEN_MS = 10000
--- How many ports are tried, upward from the first, before FluidSynth counts as unable to start.
-local PORTS = 8
+-- What FluidSynth is asked to say back. It reads its input only once the soundfont is loaded and its
+-- audio output is open, so the answer means a note sent now is heard.
+local READY = 'swara-ready'
+-- How much of a program's error output is kept for a message, from the end.
+local STDERR_KEEP = 4096
 
-local PID = vim.uv.os_getpid()
-local FIRST_PORT = 9800 + PID % 200
-
--- The FluidSynth being started, as { proc, port, token, tcp, tries, soundfont, stderr, started }.
+-- The FluidSynth being started, as { proc, input, pending, closing }, where `input` is the end of its
+-- input pipe this plugin writes to and `pending` counts the writes still under way.
 local loading
--- The FluidSynth that answered with its token, the same table, whose `tcp` now carries the stops.
+-- The FluidSynth that answered, the same table.
 local player
--- The `swara play` process streaming to the player, as { proc }.
+-- The `swara play` process writing to the player, as { proc }.
 local stream
 -- A stream that has been told to stop and has not exited yet.
 local dying
@@ -49,11 +49,73 @@ local function close(handle)
   end
 end
 
+--- Starts the program `path` with `args`. `stdin` and `stdout` are each a file descriptor, a pipe or
+--- nil for none. Calls `on_exit({ code, stderr })` once the program has exited and its error output
+--- has been read to the end. Returns the process, or nil and the reason it did not start.
+local function spawn(path, args, stdin, stdout, on_exit)
+  local errors = vim.uv.new_pipe(false)
+  local stderr, code, drained = '', nil, false
+  local function finish()
+    if code and drained then
+      vim.schedule(function()
+        on_exit({ code = code, stderr = stderr })
+      end)
+    end
+  end
+  local proc, why
+  proc, why = vim.uv.spawn(path, { args = args, stdio = { stdin, stdout, errors } }, function(status)
+    code = status
+    close(proc)
+    finish()
+  end)
+  if not proc then
+    close(errors)
+    return nil, why
+  end
+  errors:read_start(function(err, data)
+    if err or not data then
+      close(errors)
+      drained = true
+      return finish()
+    end
+    stderr = (stderr .. data):sub(-STDERR_KEEP)
+  end)
+  return proc
+end
+
+--- Writes `text` to the input of the FluidSynth `this`, on libuv's thread pool, so that a full pipe
+--- never holds up the editor. Commands of up to 512 bytes reach FluidSynth whole even while a
+--- `swara play` writes to the same pipe, because the system writes that much to a pipe at once.
+local function send(this, text)
+  if this.closing then
+    return
+  end
+  this.pending = this.pending + 1
+  vim.uv.fs_write(this.input, text, -1, function()
+    this.pending = this.pending - 1
+    if this.closing and this.pending == 0 then
+      vim.uv.fs_close(this.input)
+    end
+  end)
+end
+
+--- Closes the input of `this`, once the writes still under way have finished, so that the number is
+--- never reused while one of them holds it. FluidSynth exits when its input ends.
+local function shut(this)
+  if this.closing then
+    return
+  end
+  this.closing = true
+  if this.pending == 0 then
+    vim.uv.fs_close(this.input)
+  end
+end
+
 --- Silences the player at once: `gain 0`, then `reset`, because `reset` alone left sound for
 --- 122 ms on the song and 580 ms on a held organ note. The next `swara play` sets the gain again.
 local function silence()
-  if player and not player.tcp:is_closing() then
-    player.tcp:write('gain 0\nreset\n')
+  if player then
+    send(player, 'gain 0\nreset\n')
   end
 end
 
@@ -65,7 +127,7 @@ local function ended(this, result)
   if stream == this then
     stream = nil
     if result.code ~= 0 then
-      warn('Swara: playback failed: ' .. vim.trim(result.stderr or ''))
+      warn('Swara: playback failed: ' .. vim.trim(result.stderr))
     end
   elseif dying == this then
     dying = nil
@@ -82,21 +144,18 @@ function advance()
   end
   if not player then
     if not loading then
-      launch(wanted.soundfont, 0)
+      launch(wanted.soundfont)
     end
     return
   end
   local play = wanted
   wanted = nil
   local this = {}
-  local cmd = { play.exe, 'play', '--port', tostring(player.port), play.midi }
-  local ok, proc = pcall(vim.system, cmd, { text = true, stdout = false }, function(result)
-    vim.schedule(function()
-      ended(this, result)
-    end)
+  local proc, why = spawn(play.exe, { 'play', play.midi }, nil, player.input, function(result)
+    ended(this, result)
   end)
-  if not ok then
-    return warn('Swara: playback failed: ' .. tostring(proc))
+  if not proc then
+    return warn('Swara: playback failed: ' .. tostring(why))
   end
   this.proc = proc
   stream = this
@@ -113,144 +172,89 @@ end
 --- Gives up starting `this` player with `message`, and drops the play that was waiting for it.
 local function fail(this, message)
   loading = nil
-  close(this.tcp)
   kill(this.proc)
+  shut(this)
   wanted = nil
   warn(message)
 end
 
---- Gives up the port of `this` player: kills the FluidSynth started for it and tries the next port
---- up, or reports the failure once `PORTS` ports have been tried.
-local function busy(this)
-  if loading ~= this then
-    return
-  end
-  if this.tries + 1 < PORTS then
-    loading = nil
-    close(this.tcp)
-    kill(this.proc)
-    return launch(this.soundfont, this.tries + 1)
-  end
-  local last = vim.trim(this.stderr):match('[^\n]*$')
-  local message = ('Swara: FluidSynth did not start on ports %d to %d'):format(FIRST_PORT, this.port)
-  fail(this, last ~= '' and (message .. ': ' .. last) or message)
-end
-
---- Called when the FluidSynth of `this` exits. One still starting counts its port as taken, and
---- one that was ready is forgotten, so that the next play starts another.
-local function exited(this)
+--- Called when the FluidSynth of `this` exits. One still starting is reported with the last line it
+--- wrote, and one that was ready is forgotten, so that the next play starts another.
+local function exited(this, result)
   if loading == this then
-    busy(this)
+    local last = vim.trim(result.stderr):match('[^\n]*$')
+    fail(this, last ~= '' and ('Swara: FluidSynth did not start: ' .. last) or 'Swara: FluidSynth did not start')
   elseif player == this then
-    close(this.tcp)
+    shut(this)
     player = nil
   end
 end
 
---- Takes the bytes the port of `this` sends. The port is the player's own only when the first
---- bytes are its token. Once it is, everything after is a prompt, read and thrown away.
-local function received(this, err, data)
-  if player == this then
-    if err or not data then
-      close(this.tcp)
-      kill(this.proc)
-      player = nil
-    end
-    return
-  end
-  if loading ~= this then
-    return
-  end
-  if err or not data then
-    return busy(this)
-  end
-  this.got = this.got .. data
-  local n = math.min(#this.got, #this.token)
-  if this.got:sub(1, n) ~= this.token:sub(1, n) then
-    return busy(this)
-  end
-  if n == #this.token then
+--- Called once the FluidSynth of `this` has answered.
+local function ready(this)
+  if loading == this then
     loading, player = nil, this
     advance()
   end
 end
 
---- Connects to the port of `this` player, again every `RETRY_MS` while the connection is refused.
-local function probe(this)
-  if loading ~= this then
-    return
-  end
-  if vim.uv.now() - this.started > OPEN_MS then
-    return fail(this, ('Swara: FluidSynth did not open port %d within %d s'):format(this.port, OPEN_MS / 1000))
-  end
-  local tcp = vim.uv.new_tcp()
-  this.tcp = tcp
-  tcp:connect('127.0.0.1', this.port, function(err)
-    vim.schedule(function()
-      if loading ~= this then
-        return close(tcp)
+--- Reads what the FluidSynth of `this` writes, until it answers with `READY` on a line of its own.
+--- It reads each command back after its `> ` prompt before it answers, so the question is not the
+--- answer. Everything after is read and thrown away, because FluidSynth would stop at a full pipe.
+local function watch(this, output)
+  local partial, answered = '', false
+  output:read_start(function(err, data)
+    if err or not data then
+      return close(output)
+    end
+    if answered then
+      return
+    end
+    partial = partial .. data
+    for line in partial:gmatch('([^\n]*)\n') do
+      while line:sub(1, 2) == '> ' do
+        line = line:sub(3)
       end
-      if err then
-        close(tcp)
-        return vim.defer_fn(function()
-          probe(this)
-        end, RETRY_MS)
-      end
-      this.got = ''
-      vim.defer_fn(function()
-        busy(this)
-      end, SILENT_MS)
-      tcp:read_start(function(read_err, data)
-        vim.schedule(function()
-          received(this, read_err, data)
+      if vim.trim(line) == READY then
+        answered = true
+        return vim.schedule(function()
+          ready(this)
         end)
-      end)
-    end)
+      end
+    end
+    partial = partial:match('[^\n]*$')
   end)
 end
 
---- Starts FluidSynth on the port `tries` above the first, exactly as the spike gives it, with a
---- prompt that names this process and the port so that no other program can pass for it.
-function launch(soundfont, tries)
-  local port = FIRST_PORT + tries
-  local token = ('swara-%d-%d>'):format(PID, port)
-  local this = { port = port, token = token, tries = tries, soundfont = soundfont, stderr = '' }
+--- Starts FluidSynth with `soundfont` and its input on a new pipe, and asks it to answer once it reads.
+function launch(soundfont)
+  local fds, why = vim.uv.pipe()
+  if not fds then
+    wanted = nil
+    return warn('Swara: FluidSynth could not be started: ' .. tostring(why))
+  end
+  local output = vim.uv.new_pipe(false)
+  local this = { input = fds.write, pending = 0 }
   loading = this
-  local cmd = {
-    'fluidsynth',
-    '-s',
-    '-i',
-    '-o',
-    'shell.port=' .. port,
-    '-o',
-    'shell.prompt=' .. token,
-    '-o',
-    'synth.dynamic-sample-loading=1',
-    soundfont,
-  }
-  local ok, proc = pcall(vim.system, cmd, {
-    stdout = false,
-    stderr = function(_, data)
-      if data then
-        vim.schedule(function()
-          this.stderr = this.stderr .. data
-          if data:find('bind', 1, true) then
-            busy(this)
-          end
-        end)
-      end
-    end,
-  }, function()
-    vim.schedule(function()
-      exited(this)
-    end)
+  local args = { '-o', 'synth.dynamic-sample-loading=1', soundfont }
+  local proc
+  proc, why = spawn('fluidsynth', args, fds.read, output, function(result)
+    exited(this, result)
   end)
-  if not ok then
-    return fail(this, 'Swara: FluidSynth could not be started: ' .. tostring(proc))
+  -- FluidSynth holds its own copy now. Its input ends once every copy of the other end is closed.
+  vim.uv.fs_close(fds.read)
+  if not proc then
+    close(output)
+    return fail(this, 'Swara: FluidSynth could not be started: ' .. tostring(why))
   end
   this.proc = proc
-  this.started = vim.uv.now()
-  probe(this)
+  watch(this, output)
+  send(this, 'echo ' .. READY .. '\n')
+  vim.defer_fn(function()
+    if loading == this then
+      fail(this, ('Swara: FluidSynth did not start within %d s'):format(OPEN_MS / 1000))
+    end
+  end, OPEN_MS)
 end
 
 --- The soundfont to play with, or nil and the reason there is none.
@@ -270,7 +274,7 @@ function M.soundfont()
 end
 
 --- Plays the MIDI file of `buf`'s last build, stopping whatever is playing first. The first play of
---- a session starts FluidSynth, which takes about a second, and later plays reuse it.
+--- a session starts FluidSynth, which takes about a second and a half, and later plays reuse it.
 function M.play(buf)
   local midi = vim.b[buf].swara_midi
   if type(midi) ~= 'string' then
@@ -311,6 +315,9 @@ vim.api.nvim_create_autocmd('VimLeavePre', {
   callback = function()
     for _, this in pairs({ stream, dying, loading, player }) do
       kill(this.proc)
+    end
+    for _, this in pairs({ loading, player }) do
+      shut(this)
     end
   end,
 })

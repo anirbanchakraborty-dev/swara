@@ -1,28 +1,41 @@
 -- Playback through FluidSynth, and the hand-off to MuseScore. Each test runs in its own Neovim,
 -- because the player the plugin starts lives for the rest of the session. Fake `fluidsynth` and
--- `swara` programs log their pid and arguments, and the test stands in for FluidSynth's shell with
--- a TCP server on the port, which greets each client with the player's token and records each line.
--- That server answers only once the fake FluidSynth for its port has logged, as a real port cannot
--- answer before FluidSynth runs, so that every FluidSynth the plugin started is in the log.
+-- `swara` programs log their pid and arguments. The fake FluidSynth reads its standard input as the
+-- real one does, keeps each line it is sent in a second log, and answers `echo` the same way, so the
+-- tests see what reached FluidSynth through the pipe the plugin gives it.
 
 local h = require('helpers')
 
--- Logs its pid and arguments, then waits to be killed under the same pid.
-local FLUIDSYNTH = 'echo "fluidsynth $$ $*" >> "$SWARA_TEST_LOG"\nexec sleep 60'
+-- Logs its pid and arguments, then reads commands until its input ends, as FluidSynth's shell does:
+-- a prompt, the line read back, and for `echo` the words after it.
+local FLUIDSYNTH = [[
+echo "fluidsynth $$ $*" >> "$SWARA_TEST_LOG"
+printf '> '
+while IFS= read -r line; do
+  echo "$line" >> "$SWARA_TEST_LOG.in"
+  echo "$line"
+  case "$line" in
+    'echo '*) echo "${line#echo }" ;;
+  esac
+  printf '> '
+done]]
 
--- Answers `swara info` as the plugin's lookup needs it, and for `play` logs and waits like
--- FLUIDSYNTH.
+-- The same, but it takes half a second to answer `echo`, as the real one takes over a second to
+-- load the soundfont and open its audio output.
+local SLOW_FLUIDSYNTH = FLUIDSYNTH:gsub([['echo '%*%) echo]], "'echo '*) sleep 0.5; echo")
+
+-- Answers `swara info` as the plugin's lookup needs it, and for `play` logs, sends FluidSynth a note
+-- through its output and waits to be killed under the same pid.
 local SWARA = [[
 case "$1" in
   info) echo '{"version":"0.0.0"}' ;;
-  play) echo "swara $$ $*" >> "$SWARA_TEST_LOG"; exec sleep 60 ;;
+  play) echo "swara $$ $*" >> "$SWARA_TEST_LOG"; echo 'noteon 0 60 100'; exec sleep 60 ;;
 esac]]
 
 local PRELUDE = [=[
 local h = require('helpers')
 local playback = require('swara.playback')
 local PID = vim.fn.getpid()
-local BASE = 9800 + PID % 200
 local SOUNDFONT = h.write(h.tmpdir() .. '/test.sf2', 'soundfont\n')
 require('swara.config').setup({ soundfont = SOUNDFONT })
 
@@ -49,6 +62,12 @@ local function logged(name)
   return found
 end
 
+--- Each line the fake FluidSynth was sent, oldest first.
+local function received()
+  local path = vim.env.SWARA_TEST_LOG .. '.in'
+  return vim.fn.filereadable(path) == 1 and vim.fn.readfile(path) or {}
+end
+
 local function alive(pid)
   return vim.uv.kill(pid, 0) == 0
 end
@@ -60,47 +79,11 @@ local function until_started(name, count)
   end, 10)
 end
 
--- What each stand-in shell was sent, and how many clients it took, by port.
-local received, clients = {}, {}
-
---- Stands in for FluidSynth's shell on `port`. It sends `greeting`, by default the player's token,
---- to each client that connects, once the fake FluidSynth for `port` has logged, and again after
---- each line, as the shell sends its prompt.
-local function serve(port, greeting)
-  greeting = greeting or ('swara-%d-%d>'):format(PID, port)
-  received[port], clients[port] = {}, 0
-  local server = vim.uv.new_tcp()
-  local listening = server:bind('127.0.0.1', port)
-    and server:listen(8, function()
-      local client = vim.uv.new_tcp()
-      server:accept(client)
-      clients[port] = clients[port] + 1
-      local function greet()
-        if client:is_closing() then
-          return
-        end
-        for _, started in ipairs(logged('fluidsynth')) do
-          if started.args:find('shell.port=' .. port .. ' ', 1, true) then
-            return client:write(greeting)
-          end
-        end
-        vim.defer_fn(greet, 10)
-      end
-      vim.schedule(greet)
-      local rest = ''
-      client:read_start(function(_, data)
-        if not data then
-          return client:close()
-        end
-        rest = rest .. data
-        for line in rest:gmatch('([^\n]*)\n') do
-          table.insert(received[port], line)
-          client:write(greeting)
-        end
-        rest = rest:match('[^\n]*$')
-      end)
-    end)
-  assert(listening, ('port %d is taken'):format(port))
+--- Waits until FluidSynth has been sent `line`, and says whether it was.
+local function until_received(line)
+  return vim.wait(5000, function()
+    return vim.tbl_contains(received(), line)
+  end, 10)
 end
 
 local buf = vim.api.nvim_get_current_buf()
@@ -166,21 +149,58 @@ local tests = {}
 
 function tests.first_play_starts_fluidsynth_once()
   local result = run([[
-    serve(BASE)
     playback.play(buf)
     local played = until_started('swara', 1)
-    out({ played = played, fluidsynth = #logged('fluidsynth'), swara = logged('swara'), port = BASE, midi = MIDI, messages = messages })
+    out({ played = played, fluidsynth = #logged('fluidsynth'), swara = logged('swara'), midi = MIDI, messages = messages })
   ]])
   assert(result.played, 'no `swara play`: ' .. vim.inspect(result.messages))
   assert(result.fluidsynth == 1, result.fluidsynth .. ' FluidSynths started')
-  local expected = ('play --port %d %s'):format(result.port, result.midi)
-  assert(result.swara[1].args == expected, result.swara[1].args)
+  assert(result.swara[1].args == 'play ' .. result.midi, result.swara[1].args)
   assert(#result.messages == 0, vim.inspect(result.messages))
+end
+
+function tests.fluidsynth_is_started_without_a_port()
+  -- FluidSynth opens a network port only when told to with `-s`, and its port listens on every
+  -- network interface, so the plugin drives its standard input instead.
+  local result = run([[
+    playback.play(buf)
+    until_started('swara', 1)
+    out({ args = logged('fluidsynth')[1].args, expected = '-o synth.dynamic-sample-loading=1 ' .. SOUNDFONT })
+  ]])
+  assert(result.args == result.expected, result.args)
+end
+
+function tests.swara_play_writes_to_fluidsynth()
+  local result = run([[
+    playback.play(buf)
+    until_started('swara', 1)
+    local reached = until_received('noteon 0 60 100')
+    out({ reached = reached, lines = received() })
+  ]])
+  assert(result.reached, 'FluidSynth was sent ' .. vim.inspect(result.lines))
+  assert(result.lines[1] == 'echo swara-ready', vim.inspect(result.lines))
+end
+
+function tests.play_waits_until_fluidsynth_answers()
+  -- FluidSynth reads its input back before it answers, so the question alone is not the answer.
+  local result = run(
+    [[
+    playback.play(buf)
+    local asked = until_received('echo swara-ready')
+    vim.wait(250)
+    local early = #logged('swara')
+    local played = until_started('swara', 1)
+    out({ asked = asked, early = early, played = played })
+  ]],
+    { fluidsynth = SLOW_FLUIDSYNTH, swara = SWARA }
+  )
+  assert(result.asked, 'FluidSynth was not asked whether it is ready')
+  assert(result.early == 0, '`swara play` started before FluidSynth answered')
+  assert(result.played, 'no `swara play` once FluidSynth answered')
 end
 
 function tests.second_play_reuses_it()
   local result = run([[
-    serve(BASE)
     playback.play(buf)
     until_started('swara', 1)
     playback.play(buf)
@@ -193,16 +213,15 @@ end
 
 function tests.play_twice_stops_first()
   local result = run([[
-    serve(BASE)
     playback.play(buf)
     until_started('swara', 1)
     local first = logged('swara')[1].pid
-    local spawn, first_alive = vim.system, nil
-    vim.system = function(cmd, ...)
-      if cmd[2] == 'play' then
+    local spawn, first_alive = vim.uv.spawn, nil
+    vim.uv.spawn = function(path, options, ...)
+      if options.args and options.args[1] == 'play' then
         first_alive = alive(first)
       end
-      return spawn(cmd, ...)
+      return spawn(path, options, ...)
     end
     playback.play(buf)
     local played = until_started('swara', 2)
@@ -213,19 +232,22 @@ function tests.play_twice_stops_first()
 end
 
 function tests.stop_while_loading()
-  local result = run([[
+  local result = run(
+    [[
     playback.play(buf)
     until_started('fluidsynth', 1)
     playback.stop()
-    serve(BASE)
-    local reached = vim.wait(3000, function() return clients[BASE] > 0 end, 10)
-    vim.wait(200)
+    local asked = until_received('echo swara-ready')
+    -- Past the fake's half-second answer.
+    vim.wait(800)
     local streams = #logged('swara')
     playback.play(buf)
     until_started('swara', 1)
-    out({ reached = reached, streams = streams, fluidsynth = #logged('fluidsynth'), messages = messages })
-  ]])
-  assert(result.reached, 'the player stopped loading')
+    out({ asked = asked, streams = streams, fluidsynth = #logged('fluidsynth'), messages = messages })
+  ]],
+    { fluidsynth = SLOW_FLUIDSYNTH, swara = SWARA }
+  )
+  assert(result.asked, 'the player stopped loading')
   assert(result.streams == 0, 'a `swara play` started after the stop')
   assert(result.fluidsynth == 1, 'the next play started another FluidSynth')
   assert(#result.messages == 0, vim.inspect(result.messages))
@@ -233,58 +255,23 @@ end
 
 function tests.stop_sends_gain_zero_then_reset()
   local result = run([[
-    serve(BASE)
     playback.play(buf)
     until_started('swara', 1)
     local pid = logged('swara')[1].pid
     playback.stop()
-    local sent = vim.wait(3000, function() return #received[BASE] >= 2 end, 10)
-    out({ sent = sent, lines = received[BASE], playing = alive(pid), messages = messages })
+    local sent = vim.wait(3000, function() return received()[#received()] == 'reset' end, 10)
+    out({ sent = sent, lines = received(), playing = alive(pid), messages = messages })
   ]])
-  assert(result.sent, 'the shell was sent ' .. vim.inspect(result.lines))
+  assert(result.sent, 'FluidSynth was sent ' .. vim.inspect(result.lines))
   local n = #result.lines
   assert(result.lines[n - 1] == 'gain 0' and result.lines[n] == 'reset', vim.inspect(result.lines))
   assert(result.playing == false, '`swara play` is still running')
   assert(#result.messages == 0, vim.inspect(result.messages))
 end
 
-function tests.port_answered_by_another_program_is_skipped()
-  local result = run([[
-    serve(BASE, 'hello')
-    serve(BASE + 1)
-    playback.play(buf)
-    local played = until_started('swara', 1)
-    local fluidsynths = logged('fluidsynth')
-    local first_gone = vim.wait(2000, function() return not alive(fluidsynths[1].pid) end, 10)
-    out({ played = played, fluidsynths = fluidsynths, first_gone = first_gone, swara = logged('swara'), port = BASE })
-  ]])
-  assert(result.played, 'no `swara play`')
-  assert(#result.fluidsynths == 2, #result.fluidsynths .. ' FluidSynths started')
-  assert(result.fluidsynths[1].args:find('shell.port=' .. result.port .. ' ', 1, true), result.fluidsynths[1].args)
-  assert(result.fluidsynths[2].args:find('shell.port=' .. result.port + 1 .. ' ', 1, true), result.fluidsynths[2].args)
-  assert(result.first_gone, 'the FluidSynth for the taken port is still running')
-  assert(result.swara[1].args:find('--port ' .. result.port + 1 .. ' ', 1, true), result.swara[1].args)
-end
-
-function tests.fluidsynth_is_launched_with_its_token()
-  local result = run([[
-    serve(BASE)
-    playback.play(buf)
-    until_started('fluidsynth', 1)
-    out({
-      args = logged('fluidsynth')[1].args,
-      expected = ('-s -i -o shell.port=%d -o shell.prompt=swara-%d-%d> -o synth.dynamic-sample-loading=1 %s'):format(
-        BASE, PID, BASE, SOUNDFONT
-      ),
-    })
-  ]])
-  assert(result.args == result.expected, result.args)
-end
-
 function tests.quit_leaves_nothing()
   prepare()
   local result = h.child(PRELUDE .. [[
-    serve(BASE)
     playback.play(buf)
     assert(until_started('swara', 1), 'no `swara play`')
     vim.cmd('qall!')
@@ -301,6 +288,31 @@ function tests.quit_leaves_nothing()
     end, 3000)
     assert(gone, ('pid %d is still running'):format(pid))
   end
+end
+
+function tests.fluidsynth_ends_when_neovim_is_killed()
+  -- A Neovim that is killed runs no exit handler. FluidSynth still ends, because the end of its input
+  -- closes with the last process that holds it, and a `swara play` holds it only while it plays.
+  local quick = [[
+case "$1" in
+  info) echo '{"version":"0.0.0"}' ;;
+  play) echo "swara $$ $*" >> "$SWARA_TEST_LOG"; echo 'noteon 0 60 100' ;;
+esac]]
+  prepare({ fluidsynth = FLUIDSYNTH, swara = quick })
+  h.child(PRELUDE .. [[
+    playback.play(buf)
+    assert(until_started('swara', 1), 'no `swara play`')
+    assert(until_received('noteon 0 60 100'), 'FluidSynth was sent ' .. vim.inspect(received()))
+    vim.wait(100)
+    vim.uv.kill(PID, 'sigkill')
+  ]])
+  local started = vim.fn.readfile(vim.env.SWARA_TEST_LOG)[1]
+  local pid = tonumber(started:match('^fluidsynth (%d+)'))
+  assert(pid, started)
+  local gone = h.wait_for(function()
+    return vim.uv.kill(pid, 0) ~= 0
+  end, 3000)
+  assert(gone, ('FluidSynth, pid %d, is still running'):format(pid))
 end
 
 function tests.no_build_yet()
@@ -321,7 +333,6 @@ function tests.soundfont_defaults_to_ms_basic()
     vim.fn.filereadable = function(path)
       return path:find('MS Basic.sf3', 1, true) and 1 or readable(path)
     end
-    serve(BASE)
     playback.play(buf)
     until_started('fluidsynth', 1)
     out({ args = logged('fluidsynth')[1].args })
@@ -369,21 +380,20 @@ function tests.fluidsynth_not_installed_says_so()
   assert(result.messages[1] == 'Swara: FluidSynth not found on PATH', vim.inspect(result.messages))
 end
 
-function tests.fluidsynth_that_keeps_failing_is_reported()
+function tests.fluidsynth_that_fails_is_reported()
   local failing = 'echo "fluidsynth $$ $*" >> "$SWARA_TEST_LOG"\necho "fluidsynth: error: no audio device" >&2\nexit 1'
   local result = run(
     [[
     playback.play(buf)
     vim.wait(5000, function() return #messages > 0 end, 10)
-    out({ messages = messages, fluidsynth = #logged('fluidsynth'), port = BASE })
+    vim.wait(100)
+    out({ messages = messages, fluidsynth = #logged('fluidsynth'), swara = #logged('swara') })
   ]],
     { fluidsynth = failing, swara = SWARA }
   )
-  assert(result.fluidsynth == 8, result.fluidsynth .. ' FluidSynths started')
-  local expected = ('Swara: FluidSynth did not start on ports %d to %d: fluidsynth: error: no audio device'):format(
-    result.port,
-    result.port + 7
-  )
+  assert(result.fluidsynth == 1, result.fluidsynth .. ' FluidSynths started')
+  assert(result.swara == 0, 'a `swara play` started')
+  local expected = 'Swara: FluidSynth did not start: fluidsynth: error: no audio device'
   assert(result.messages[1] == expected, vim.inspect(result.messages))
 end
 
@@ -395,7 +405,6 @@ case "$1" in
 esac]]
   local result = run(
     [[
-    serve(BASE)
     playback.play(buf)
     vim.wait(5000, function() return #messages > 0 end, 10)
     out({ messages = messages })
@@ -407,7 +416,6 @@ end
 
 function tests.player_that_exits_is_started_again()
   local result = run([[
-    serve(BASE)
     playback.play(buf)
     until_started('swara', 1)
     local first = logged('fluidsynth')[1].pid
@@ -453,7 +461,8 @@ function tests.musescore_before_a_build_says_so()
 end
 
 -- Times real playback for `docs/bench/speed.md`: the real FluidSynth with MuseScore's soundfont,
--- and the `swara` that `cargo build` leaves in `target/debug`. It plays a scale out loud.
+-- and the `swara` that `cargo build` leaves in `target/debug`. It plays a scale out loud, and checks
+-- that the FluidSynth it starts holds no network socket.
 function tests.real_play_times()
   if vim.env.SWARA_REAL ~= '1' then
     return
@@ -478,12 +487,12 @@ function tests.real_play_times()
     local playback = require('swara.playback')
     local buf = vim.api.nvim_get_current_buf()
     vim.b[buf].swara_midi = %q
-    local spawn, spawned = vim.system, {}
-    vim.system = function(cmd, ...)
-      if cmd[2] == 'play' then
+    local spawn, spawned = vim.uv.spawn, {}
+    vim.uv.spawn = function(path, options, ...)
+      if options.args and options.args[1] == 'play' then
         table.insert(spawned, vim.uv.hrtime())
       end
-      return spawn(cmd, ...)
+      return spawn(path, options, ...)
     end
     local function timed(count)
       local start = vim.uv.hrtime()
@@ -492,15 +501,19 @@ function tests.real_play_times()
       return (spawned[count] - start) / 1e6
     end
     local first = timed(1)
+    local fluidsynth = vim.trim(vim.fn.system({ 'pgrep', '-P', tostring(vim.uv.os_getpid()), '-x', 'fluidsynth' }))
+    local sockets = vim.trim(vim.fn.system({ 'lsof', '-nP', '-a', '-p', fluidsynth, '-i' }))
     vim.wait(1500)
     local second = timed(2)
     vim.wait(500)
     playback.stop()
     vim.wait(100)
-    io.stdout:write(vim.json.encode({ first = first, second = second }), '\n')
+    io.stdout:write(vim.json.encode({ first = first, second = second, fluidsynth = fluidsynth, sockets = sockets }), '\n')
   ]=]):format(dir .. '/score.midi'),
     60000
   )
+  assert(result.fluidsynth:match('^%d+$'), 'no FluidSynth found: ' .. result.fluidsynth)
+  assert(result.sockets == '', 'FluidSynth holds a network socket:\n' .. result.sockets)
   io.stdout:write(('real_play_times: first play %.1f ms, second play %.1f ms\n'):format(result.first, result.second))
 end
 
