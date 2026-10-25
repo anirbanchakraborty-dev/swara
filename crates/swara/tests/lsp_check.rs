@@ -10,94 +10,30 @@ mod client;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::thread::sleep;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
+use client::fake::{alive, assert_all_gone, start, wait_until};
 use client::{TestClient, uri};
 use lsp_types::{DiagnosticSeverity, Position, Range, Uri};
 use serde_json::json;
 
 const WAIT: Duration = Duration::from_secs(5);
-const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-lilypond.sh");
 
 fn fixture(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/lilypond");
     fs::canonicalize(dir.join(name)).unwrap()
 }
 
-/// A fresh, empty folder for one test.
 fn scratch(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lsp_check").join(name);
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).unwrap();
-    dir
+    client::scratch("lsp_check", name)
 }
 
 fn file_uri(path: &Path) -> Uri {
     uri(path.to_str().unwrap())
 }
 
-/// The fake's record of its runs.
-struct Fake {
-    log: PathBuf,
-}
-
-impl Fake {
-    /// One line per run: its pid, then its arguments.
-    fn runs(&self) -> Vec<String> {
-        fs::read_to_string(&self.log).unwrap_or_default().lines().map(String::from).collect()
-    }
-
-    /// Every process the fake started: each run's own pid and each grandchild's.
-    fn pids(&self) -> Vec<i32> {
-        let mut children = self.log.clone().into_os_string();
-        children.push(".children");
-        let children = fs::read_to_string(children).unwrap_or_default();
-        let runs = self.runs();
-        let own = runs.iter().map(|run| run.split(' ').next().unwrap().to_owned());
-        own.chain(children.lines().map(String::from)).map(|pid| pid.parse().unwrap()).collect()
-    }
-}
-
-/// A server whose `lilypond` is the fake, set to `mode`, with its log in `dir`.
-fn start(dir: &Path, mode: &str, auto_check: bool, env: &[(&str, &str)]) -> (TestClient, Fake) {
-    let log = dir.join("fake.log");
-    let options = json!({"autoCheck": auto_check, "lilypond": FAKE, "includePaths": []});
-    let mut env = env.to_vec();
-    env.push(("SWARA_FAKE_LOG", log.to_str().unwrap()));
-    env.push(("SWARA_FAKE_MODE", mode));
-    (TestClient::spawn_env(options, &env), Fake { log })
-}
-
 fn insert(client: &mut TestClient, file: &Uri, version: i32, at: Position, text: &str) {
     client.change(file, version, Range::new(at, at), text);
-}
-
-/// Polls `done` every 5 ms until it holds or `timeout` passes.
-fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if done() {
-            return true;
-        }
-        if Instant::now() >= deadline {
-            return false;
-        }
-        sleep(Duration::from_millis(5));
-    }
-}
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 delivers nothing; it only asks whether the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-/// Waits for the fake to have started `count` processes, then for all of them to be gone.
-fn assert_all_gone(fake: &Fake, count: usize) {
-    assert!(wait_until(WAIT, || fake.pids().len() >= count), "pids: {:?}", fake.pids());
-    let pids = fake.pids();
-    let gone = wait_until(Duration::from_secs(3), || pids.iter().all(|&pid| !alive(pid)));
-    let left: Vec<_> = pids.iter().filter(|&&pid| alive(pid)).collect();
-    assert!(gone, "still running: {left:?}");
 }
 
 fn from_lilypond(diagnostic: &&lsp_types::Diagnostic) -> bool {
@@ -265,4 +201,22 @@ fn real_check_finds_seeded_errors() {
         });
         assert!(found, "no {expected} in {diagnostics:?}");
     }
+}
+
+#[test]
+#[ignore = "runs the real LilyPond"]
+fn real_check_reads_includes_from_a_bengali_folder() {
+    // The check passes the buffer's folder with `-I`, so an include beside a file in a Bengali
+    // folder with a space in its name must still be found and its errors placed on its lines.
+    let dir = scratch("real-bengali").join("আমার গান");
+    fs::create_dir_all(&dir).unwrap();
+    let part = dir.join("part 1.ily");
+    fs::write(&part, "partMusic = { c'4 \\fooBar d' }\n").unwrap();
+    let mut client = TestClient::spawn(json!({"autoCheck": true, "lilypond": null}));
+    let main = file_uri(&dir.join("main.ly"));
+    client.open(&main, "\\version \"2.26.0\"\n\\include \"part 1.ily\"\n{ \\partMusic }\n");
+    insert(&mut client, &main, 2, Position::new(3, 0), "% done\n");
+    let unknown = |d: &[lsp_types::Diagnostic]| d.iter().any(|d| d.message.contains("fooBar"));
+    let (diagnostics, _) = client.wait_diagnostics(&file_uri(&part), Duration::from_secs(20), unknown);
+    assert_eq!(diagnostics[0].range.start, Position::new(0, 18), "{diagnostics:?}");
 }

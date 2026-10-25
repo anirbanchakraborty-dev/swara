@@ -4,9 +4,13 @@
 // Each test file uses a different part of the client.
 #![allow(dead_code)]
 
-use std::collections::VecDeque;
+pub mod fake;
+
+use std::collections::{HashMap, VecDeque};
 use std::fmt::Write as _;
+use std::fs;
 use std::io::BufReader;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver};
@@ -28,6 +32,14 @@ use lsp_types::{
 use serde_json::Value;
 
 const REPLY_WAIT: Duration = Duration::from_secs(10);
+
+/// A fresh, empty folder for one test, named after its test file and the test.
+pub fn scratch(file: &str, name: &str) -> PathBuf {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(file).join(name);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 /// A `file://` URI for an absolute path, percent-encoded as Neovim sends it, which leaves the
 /// characters RFC 3986 allows in a path as they are.
@@ -52,6 +64,8 @@ pub struct TestClient {
     pending: VecDeque<(Instant, Notification)>,
     /// Every notification a wait has taken, whatever it was waiting for.
     seen: Vec<Notification>,
+    /// How many of each method's notifications `wait_notification` has returned.
+    taken: HashMap<String, usize>,
     next_id: i32,
     last_sent: Instant,
     pub initialize_result: InitializeResult,
@@ -102,11 +116,15 @@ impl TestClient {
             messages,
             pending: VecDeque::new(),
             seen: Vec::new(),
+            taken: HashMap::new(),
             next_id: 0,
             last_sent: Instant::now(),
             initialize_result: InitializeResult::default(),
         };
-        let encodings = encodings.iter().map(|e| PositionEncodingKind::new(e)).collect();
+        let encodings = encodings
+            .iter()
+            .map(|e| PositionEncodingKind::new(e))
+            .collect();
         let params = InitializeParams {
             capabilities: ClientCapabilities {
                 general: Some(GeneralClientCapabilities {
@@ -125,7 +143,9 @@ impl TestClient {
 
     pub fn open(&mut self, uri: &Uri, text: &str) {
         let item = TextDocumentItem::new(uri.clone(), "lilypond".into(), 1, text.into());
-        self.notify::<DidOpenTextDocument>(DidOpenTextDocumentParams { text_document: item });
+        self.notify::<DidOpenTextDocument>(DidOpenTextDocumentParams {
+            text_document: item,
+        });
     }
 
     pub fn change(&mut self, uri: &Uri, version: i32, range: Range, text: &str) {
@@ -177,7 +197,10 @@ impl TestClient {
         let deadline = Instant::now() + timeout;
         loop {
             let Some((arrived, notification)) = self.next_notification(deadline) else {
-                panic!("no matching diagnostics for {} within {timeout:?}", uri.as_str());
+                panic!(
+                    "no matching diagnostics for {} within {timeout:?}",
+                    uri.as_str()
+                );
             };
             if notification.method != PublishDiagnostics::METHOD {
                 continue;
@@ -185,7 +208,10 @@ impl TestClient {
             let params: PublishDiagnosticsParams =
                 serde_json::from_value(notification.params).unwrap();
             if params.uri == *uri && pred(&params.diagnostics) {
-                return (params.diagnostics, arrived.saturating_duration_since(self.last_sent));
+                return (
+                    params.diagnostics,
+                    arrived.saturating_duration_since(self.last_sent),
+                );
             }
         }
     }
@@ -211,7 +237,28 @@ impl TestClient {
     pub fn notifications(&mut self, method: &str, settle: Duration) -> Vec<Value> {
         let deadline = Instant::now() + settle;
         while self.next_notification(deadline).is_some() {}
-        self.seen.iter().filter(|n| n.method == method).map(|n| n.params.clone()).collect()
+        self.seen
+            .iter()
+            .filter(|n| n.method == method)
+            .map(|n| n.params.clone())
+            .collect()
+    }
+
+    /// Waits for the next `method` notification that no earlier call returned, whether or not
+    /// another wait has already read past it.
+    pub fn wait_notification(&mut self, method: &str, timeout: Duration) -> Value {
+        let deadline = Instant::now() + timeout;
+        let taken = self.taken.get(method).copied().unwrap_or(0);
+        loop {
+            if let Some(n) = self.seen.iter().filter(|n| n.method == method).nth(taken) {
+                let params = n.params.clone();
+                self.taken.insert(method.to_owned(), taken + 1);
+                return params;
+            }
+            if self.next_notification(deadline).is_none() {
+                panic!("no {method} within {timeout:?}");
+            }
+        }
     }
 
     fn send(&mut self, message: Message) {
