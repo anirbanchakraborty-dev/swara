@@ -50,6 +50,14 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 The plugin needs the `swara` program, which holds the language server and the grammar. It uses a `swara` found on `PATH` first. Otherwise, the first time a LilyPond file opens, it downloads the release archive for its own version from this repository's GitHub releases into Neovim's data folder, and unpacks it only once its SHA-256 matches the release's `SHA256SUMS`. Release archives are built for macOS on Apple silicon and Intel, Linux on x86-64 and ARM64, and Windows on x86-64. The tests run on macOS and Linux.
 
+On macOS and Linux, Homebrew can install the program instead, from [anirbanchakraborty-dev/homebrew-tap](https://github.com/anirbanchakraborty-dev/homebrew-tap):
+
+```bash
+brew install anirbanchakraborty-dev/tap/swara
+```
+
+The plugin does not compare its own version with a `swara` it finds on `PATH`, so run `brew upgrade swara` after each plugin update to keep the two on the same release.
+
 ### With nvim-treesitter
 
 nvim-treesitter is not needed, because the plugin loads its grammar from the `swara` program. To have nvim-treesitter manage the grammar instead, for example to use it in other plugins, register it from [tree-sitter-lilypond](https://github.com/anirbanchakraborty-dev/tree-sitter-lilypond) in a `User TSUpdate` autocommand, as nvim-treesitter's `main` branch documents, and run `:TSInstall lilypond` once.
