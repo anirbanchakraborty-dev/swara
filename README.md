@@ -13,13 +13,15 @@ Opening a `.ly` or `.ily` file starts Swara's colours, folds and indent from its
 - Lists the file's variables and its `\score`, `\book` and `\bookpart` blocks as document symbols, for a picker or an outline.
 - Builds the PDF and MIDI on each save, opens the PDF the first time, and has Skim reload it after every later build.
 
+The instant checks come from Swara's own grammar, which does not yet read every corner of LilyPond. Of the 2,774 files in its test corpus that LilyPond accepts, 118 show a syntax error that LilyPond does not report, from constructs such as a Scheme boolean written in capitals (`##T`), a number with a trailing dot (`4.\cm`) and some `\tempo` and `\time` forms. None of the 114 published scores from the Mutopia Project in that corpus shows one. Where the two disagree, LilyPond's own check, which runs once typing pauses, is the one to trust. [docs/bench/verdict.md](docs/bench/verdict.md) compares the grammar with the existing LilyPond grammar for Tree-sitter, which it beats on speed and on broken files but not yet on this count.
+
 LilyPond runs any Scheme code a file contains, and that code can run programs and change files as the user. So opening a file never runs LilyPond. The first run for a file comes only after typing in it, saving it or asking for a build, each a deliberate act on that file, the same as pressing compile. A downloaded piece opened only to read is never run, and the `auto_check` setting turns the check while typing off altogether.
 
 The plugin adds the rest. It shows the score as an image inside the editor, plays it through FluidSynth, opens it in MuseScore for slower practice, and writes new lessons from templates. A guitar or piano lesson prints the sargam name of each note (Sa, Re, Ga and so on) under the staff, in Bengali, Devanagari or Latin letters, counted from any chosen Sa. A song lesson takes lyrics typed in English letters and prints them in Bengali script, with the words as typed in smaller type beneath them, or either line alone. The converter is a general engine, and Bengali is the one script it carries a table for so far.
 
 ## Requirements
 
-- Neovim 0.12 or later.
+- Neovim 0.12 or later. The tests run on Neovim 0.12.6.
 - LilyPond, for the LilyPond check, builds, preview and playback. Swara is tested with LilyPond 2.26.0. Other versions should work, because the server reads LilyPond's commands from whichever LilyPond is installed. Colours, the instant checks and tidying work without it.
 - FluidSynth, for playback, and a soundfont. MuseScore 4's `MS Basic.sf3` is used when MuseScore 4 is installed in `/Applications`, and the `soundfont` setting names any other.
 - MuseScore 4, for `:Swara musescore`.
@@ -35,6 +37,8 @@ brew install neovim lilypond fluid-synth
 ```bash
 brew install --cask musescore skim
 ```
+
+Swara plays a score through FluidSynth's command shell, which listens on a port. FluidSynth 2.6.1 opens that port on every network interface and has no setting to keep it on this machine, so from the first play until Neovim quits, another machine on the same network can send it commands. On a shared network, quitting Neovim after playing closes the port.
 
 ## Installing
 
