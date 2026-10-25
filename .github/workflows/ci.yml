@@ -11,6 +11,8 @@ permissions:
 env:
   RUST_VERSION: 1.98.0
   LILYPOND_VERSION: 2.26.0
+  # Swara builds against the grammar in a folder beside its own, at the commit it was tested with.
+  GRAMMAR_REV: 2fce2fefb3989aad440cb143b63848f385154940
 
 jobs:
   test:
@@ -23,8 +25,19 @@ jobs:
           - os: macos-latest
             lilypond: darwin-arm64
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: swara
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: swara
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: anirbanchakraborty-dev/tree-sitter-lilypond
+          ref: ${{ env.GRAMMAR_REV }}
+          path: tree-sitter-lilypond
 
       - name: Install Rust
         run: |
@@ -86,8 +99,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       NVIM_VERSION: 0.12.6
+    defaults:
+      run:
+        working-directory: swara
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: swara
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: anirbanchakraborty-dev/tree-sitter-lilypond
+          ref: ${{ env.GRAMMAR_REV }}
+          path: tree-sitter-lilypond
 
       - name: Install Rust
         run: |
