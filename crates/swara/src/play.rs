@@ -143,9 +143,9 @@ fn drain(conn: &TcpStream) -> io::Result<mpsc::Receiver<()>> {
     Ok(receiver)
 }
 
-/// Waits for `due` without spinning for long. On macOS a sleep overshoots by about a quarter of its
-/// length, up to about 5 ms, so a long sleep stops 6 ms short, shorter sleeps of half the time left
-/// close the gap, and only the last millisecond is spun.
+/// Waits for `due` without spinning for long. On macOS a sleep can end up to half its length late,
+/// so each sleep is half the time left, which ends before `due` even then, and only the last
+/// millisecond is spun.
 fn wait_until(due: Instant) {
     loop {
         let now = Instant::now();
@@ -153,9 +153,7 @@ fn wait_until(due: Instant) {
             return;
         }
         let left = due - now;
-        if left > Duration::from_millis(8) {
-            thread::sleep(left - Duration::from_millis(6));
-        } else if left > Duration::from_millis(1) {
+        if left > Duration::from_millis(1) {
             thread::sleep(left / 2);
         } else {
             std::hint::spin_loop();
@@ -334,9 +332,9 @@ mod tests {
         }
     }
 
-    /// A sleep on macOS has measured up to 5 ms late, so a wait must end on time anyway. The
-    /// median holds the 1 ms bound, which a plain sleep misses every time. The worst case gets
-    /// 5 ms, because one descheduling on a shared machine is not a fault in the wait.
+    /// A sleep on macOS can end late, so a wait must end on time anyway. The median holds the 1 ms
+    /// bound, which a plain sleep misses every time. The worst case gets 5 ms, because one
+    /// descheduling on a shared machine is not a fault in the wait.
     #[test]
     fn waits_end_within_a_millisecond() {
         let mut late: Vec<Duration> = (0..10)
@@ -351,6 +349,23 @@ mod tests {
             late[(late.len() - 1) / 2] < Duration::from_millis(1),
             "{late:?}"
         );
+        assert!(late[late.len() - 1] < Duration::from_millis(5), "{late:?}");
+    }
+
+    /// A sleep on macOS can end up to half its length late, which a long first sleep turns into a
+    /// late wait. Measured on 2026-10-25: the overshoot reached 0.50 of the sleep at every length
+    /// from 1 ms to 19 ms.
+    #[test]
+    fn long_waits_end_within_a_millisecond() {
+        let mut late: Vec<Duration> = (0..5)
+            .map(|_| {
+                let due = Instant::now() + Duration::from_millis(100);
+                wait_until(due);
+                Instant::now() - due
+            })
+            .collect();
+        late.sort();
+        assert!(late[late.len() / 2] < Duration::from_millis(1), "{late:?}");
         assert!(late[late.len() - 1] < Duration::from_millis(5), "{late:?}");
     }
 }
