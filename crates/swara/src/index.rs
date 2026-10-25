@@ -23,8 +23,6 @@ pub const DEFAULT_LANGUAGE: &str = "nederlands";
 /// reached, or `None` when it cannot be known, such as in an `.ily` file nothing includes.
 pub type Languages = Option<BTreeSet<String>>;
 
-// Going to a definition reads `path` and `range`, in a later task.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Definition {
     pub name: String,

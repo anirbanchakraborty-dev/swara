@@ -22,7 +22,8 @@ use lsp_types::request::{
 };
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams,
+    DidChangeTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse,
+    GotoDefinitionParams, GotoDefinitionResponse, Range,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandOptions,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
     OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
@@ -36,6 +37,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::commanddata::{self, CommandData};
 use crate::completion;
+use crate::definition;
 use crate::diagnostics::{self, Layers, includes, names, syntax};
 use crate::document::Document;
 use crate::file_uri;
@@ -46,6 +48,7 @@ use crate::line_index::{Encoding, LineIndex};
 use crate::lilypond::messages::{self, LyFile};
 use crate::lilypond::run::{self, RunResult, Running};
 use crate::lilypond::to_diagnostic;
+use crate::symbols;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -352,9 +355,39 @@ impl<'c> Server<'c> {
                 }
                 Err(error) => invalid(id, &error.to_string()),
             },
-            GotoDefinition::METHOD
-            | DocumentSymbolRequest::METHOD
-            | Formatting::METHOD
+            GotoDefinition::METHOD => {
+                match serde_json::from_value::<GotoDefinitionParams>(request.params) {
+                    Ok(params) => {
+                        let at = params.text_document_position_params;
+                        let found = self.documents.get(&at.text_document.uri).and_then(|doc| {
+                            let pos =
+                                doc.index.position_to_byte(&doc.text, at.position, self.encoding);
+                            definition::definition(doc, pos, &self.index)
+                        });
+                        let found = found.map(|mut location| {
+                            location.range = self.encoded(&location.uri, location.range);
+                            GotoDefinitionResponse::Scalar(location)
+                        });
+                        Response::new_ok(id, found)
+                    }
+                    Err(error) => invalid(id, &error.to_string()),
+                }
+            }
+            DocumentSymbolRequest::METHOD => {
+                match serde_json::from_value::<DocumentSymbolParams>(request.params) {
+                    Ok(params) => {
+                        let outline = self.documents.get(&params.text_document.uri).map(|doc| {
+                            DocumentSymbolResponse::Nested(symbols::document_symbols(
+                                doc,
+                                self.encoding,
+                            ))
+                        });
+                        Response::new_ok(id, outline)
+                    }
+                    Err(error) => invalid(id, &error.to_string()),
+                }
+            }
+            Formatting::METHOD
             | ExecuteCommand::METHOD => Response::new_ok(id, Value::Null),
             method => Response::new_err(
                 id,
@@ -563,6 +596,29 @@ impl<'c> Server<'c> {
     }
 
     /// Rebuilds the syntax errors of one file and publishes all its diagnostics.
+    /// `range`, in UTF-8 positions in the file at `uri`, in the client's encoding. The open copy
+    /// of the file is read when there is one, since the index summarised that copy.
+    fn encoded(&self, uri: &Uri, range: Range) -> Range {
+        if self.encoding == Encoding::Utf8 {
+            return range;
+        }
+        let read;
+        let (text, index) = match self.documents.get(uri) {
+            Some(doc) => (doc.text.as_str(), &doc.index),
+            None => {
+                let text = file_uri::to_path(uri).and_then(|path| fs::read_to_string(path).ok());
+                let Some(text) = text else { return range };
+                read = (LineIndex::new(&text), text);
+                (read.1.as_str(), &read.0)
+            }
+        };
+        let convert = |p| {
+            let byte = index.position_to_byte(text, p, Encoding::Utf8);
+            index.byte_to_position(text, byte, self.encoding)
+        };
+        Range::new(convert(range.start), convert(range.end))
+    }
+
     fn refresh(&mut self, uri: &Uri) -> Result<()> {
         let (Some(doc), Some(layers)) = (self.documents.get(uri), self.layers.get_mut(uri)) else {
             return Ok(());

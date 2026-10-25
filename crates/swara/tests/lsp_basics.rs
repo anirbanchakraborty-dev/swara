@@ -7,9 +7,11 @@ use std::fmt::Write as _;
 use std::time::Duration;
 
 use client::{TestClient, uri};
+use lsp_types::request::{DocumentSymbolRequest, GotoDefinition};
 use lsp_types::{
-    Position, PositionEncodingKind, Range, TextDocumentIdentifier, TextDocumentSyncCapability,
-    TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams, GotoDefinitionResponse,
+    Position, PositionEncodingKind, Range, TextDocumentIdentifier, TextDocumentPositionParams,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
 };
 use serde_json::{Value, json};
 use tree_sitter::{Node, Parser};
@@ -93,6 +95,39 @@ fn utf16_client_gets_utf16_ranges() {
     let (diagnostics, _) = client.wait_diagnostics(&file, WAIT, |d| !d.is_empty());
     // 𝄞 is two UTF-16 units, so the stray brace starts at unit 11, though at byte 13.
     assert_eq!(diagnostics[0].range.start, Position::new(0, 11), "{diagnostics:?}");
+}
+
+#[test]
+fn definition_and_outline_in_utf16() {
+    let mut client = TestClient::spawn_offering(options(), &["utf-16"]);
+    let defs = uri("/music/defs.ily");
+    let main = uri("/music/main.ly");
+    // Each Bengali letter is three bytes and one UTF-16 unit, so the name ends at unit 5.
+    client.open(&defs, "\"সুর\" = { c }\n");
+    client.open(&main, "\\include \"defs.ily\"\n{ \\\"সুর\" }\n");
+    let found = client.request::<GotoDefinition>(GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: main.clone() },
+            position: Position::new(1, 5),
+        },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+    let Some(GotoDefinitionResponse::Scalar(location)) = found else {
+        panic!("no definition: {found:?}");
+    };
+    assert_eq!(location.uri, defs);
+    assert_eq!(location.range, Range::new(Position::new(0, 0), Position::new(0, 5)));
+    let outline = client.request::<DocumentSymbolRequest>(DocumentSymbolParams {
+        text_document: TextDocumentIdentifier { uri: defs.clone() },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+    let Some(DocumentSymbolResponse::Nested(symbols)) = outline else {
+        panic!("no outline: {outline:?}");
+    };
+    assert_eq!(symbols[0].name, "সুর");
+    assert_eq!(symbols[0].selection_range.end, Position::new(0, 5));
 }
 
 /// A small xorshift generator, so the edits are the same on every run.

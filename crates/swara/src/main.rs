@@ -1,6 +1,7 @@
 mod arity;
 mod commanddata;
 mod completion;
+mod definition;
 mod diagnostics;
 mod document;
 mod file_uri;
@@ -11,6 +12,7 @@ mod lilypond;
 mod line_index;
 mod node_text;
 mod server;
+mod symbols;
 #[cfg(test)]
 mod testing;
 
