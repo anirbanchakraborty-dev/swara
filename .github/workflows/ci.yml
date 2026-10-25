@@ -71,3 +71,47 @@ jobs:
       - name: Tests, with the ignored ones
         if: runner.os == 'macOS'
         run: cargo test --locked --workspace -- --include-ignored
+
+  plugin:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            nvim: linux-x86_64
+            sha256: 474430d53e6264f6d6dd18db42d6dc9df3a1b56ca9e88a325bbf860e1a811d87
+          - os: macos-latest
+            nvim: macos-arm64
+            sha256: 1dbd148222b051ba6c307c4d17a318ed083df018a4f6a5a0ce46955ffc9ab87b
+    runs-on: ${{ matrix.os }}
+    env:
+      NVIM_VERSION: 0.12.6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      # The checksums are the ones GitHub publishes for each asset of the Neovim release.
+      - name: Install Neovim
+        env:
+          ARCHIVE: nvim-${{ matrix.nvim }}.tar.gz
+          SHA256: ${{ matrix.sha256 }}
+        run: |
+          curl --fail --location --silent --show-error --output "${RUNNER_TEMP}/${ARCHIVE}" \
+            "https://github.com/neovim/neovim/releases/download/v${NVIM_VERSION}/${ARCHIVE}"
+          echo "${SHA256}  ${RUNNER_TEMP}/${ARCHIVE}" | shasum -a 256 --check
+          mkdir -p ~/nvim
+          tar -xzf "${RUNNER_TEMP}/${ARCHIVE}" -C ~/nvim --strip-components=1
+          echo "$HOME/nvim/bin" >> "$GITHUB_PATH"
+
+      - name: Show the Neovim version
+        run: nvim --version | head -n 1
+
+      - name: Build swara
+        run: cargo build --locked -p swara -p swara-parser
+
+      - name: Plugin tests
+        run: nvim --clean --headless -l tests/run.lua
