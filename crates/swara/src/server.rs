@@ -21,9 +21,10 @@ use lsp_types::request::{
     Request as _,
 };
 use lsp_types::{
-    CompletionOptions, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
+    DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandOptions,
-    HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
+    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
     OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
     ServerInfo, ShowMessageParams, TextDocumentIdentifier,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
@@ -34,9 +35,11 @@ use serde_json::{Value, json};
 use tree_sitter::{Node, Parser};
 
 use crate::commanddata::{self, CommandData};
+use crate::completion;
 use crate::diagnostics::{self, Layers, includes, names, syntax};
 use crate::document::Document;
 use crate::file_uri;
+use crate::hover;
 use crate::index::Index;
 use crate::info;
 use crate::line_index::{Encoding, LineIndex};
@@ -326,9 +329,30 @@ impl<'c> Server<'c> {
             "swara/debugCommandData" if self.test_mode => {
                 Response::new_ok(id, self.data.as_ref().map(CommandData::summary))
             }
-            Completion::METHOD
-            | HoverRequest::METHOD
-            | GotoDefinition::METHOD
+            Completion::METHOD => match serde_json::from_value::<CompletionParams>(request.params) {
+                Ok(params) => {
+                    let at = params.text_document_position;
+                    let items = self.documents.get(&at.text_document.uri).map(|doc| {
+                        let pos = doc.index.position_to_byte(&doc.text, at.position, self.encoding);
+                        let data = self.data.as_ref();
+                        completion::complete(doc, pos, data, &self.index, self.encoding)
+                    });
+                    Response::new_ok(id, items.map(CompletionResponse::Array))
+                }
+                Err(error) => invalid(id, &error.to_string()),
+            },
+            HoverRequest::METHOD => match serde_json::from_value::<HoverParams>(request.params) {
+                Ok(params) => {
+                    let at = params.text_document_position_params;
+                    let shown = self.documents.get(&at.text_document.uri).and_then(|doc| {
+                        let pos = doc.index.position_to_byte(&doc.text, at.position, self.encoding);
+                        hover::hover(doc, pos, self.data.as_ref())
+                    });
+                    Response::new_ok(id, shown)
+                }
+                Err(error) => invalid(id, &error.to_string()),
+            },
+            GotoDefinition::METHOD
             | DocumentSymbolRequest::METHOD
             | Formatting::METHOD
             | ExecuteCommand::METHOD => Response::new_ok(id, Value::Null),

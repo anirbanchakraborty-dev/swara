@@ -1,8 +1,10 @@
 mod arity;
 mod commanddata;
+mod completion;
 mod diagnostics;
 mod document;
 mod file_uri;
+mod hover;
 mod index;
 mod info;
 mod lilypond;

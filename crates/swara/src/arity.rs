@@ -19,10 +19,10 @@ pub struct Signatures<'a> {
     pub own: &'a HashMap<String, Vec<Arg>>,
 }
 
-// Completion reads this, in a later task. The checks use `bind_with`.
-#[allow(dead_code)]
 /// The arguments `cmd` takes from `siblings`, the nodes after it in the same parent, each with
 /// the kind its signature asks for. A name that is not a music function binds nothing.
+// The checks and completion bind through `bind_with`, which sees the files' own functions too.
+#[cfg(test)]
 pub fn bind_args<'t>(
     cmd: &str,
     siblings: &[Node<'t>],

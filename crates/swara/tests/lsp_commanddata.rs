@@ -13,7 +13,11 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use client::{TestClient, uri};
-use lsp_types::{Diagnostic, Position, Range};
+use lsp_types::request::{Completion, HoverRequest};
+use lsp_types::{
+    CompletionParams, CompletionResponse, Diagnostic, HoverContents, HoverParams, Position, Range,
+    TextDocumentIdentifier, TextDocumentPositionParams,
+};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -208,4 +212,35 @@ fn names_follow_an_open_include() {
     let end = Position::new(1, 0);
     client.change(&defs, 2, Range::new(end, end), "tune = { c }\n");
     client.wait_diagnostics(&main, WAIT, <[Diagnostic]>::is_empty);
+}
+
+#[test]
+fn completion_and_hover_answer() {
+    let dir = scratch("complete-hover");
+    let mut client = start_fake(&dir, "2.26.0", Some(MINI));
+    wait_for_data(&mut client);
+    let file = uri("/music/lesson.ly");
+    client.open(&file, "{ \\relative c' { c } }\n");
+    let at = |character| TextDocumentPositionParams {
+        text_document: TextDocumentIdentifier { uri: file.clone() },
+        position: Position::new(0, character),
+    };
+    let offered = client.request::<Completion>(CompletionParams {
+        text_document_position: at(6),
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+        context: None,
+    });
+    let Some(CompletionResponse::Array(items)) = offered else {
+        panic!("no completion list: {offered:?}");
+    };
+    assert!(items.iter().any(|i| i.label == "\\relative"));
+    let shown = client.request::<HoverRequest>(HoverParams {
+        text_document_position_params: at(6),
+        work_done_progress_params: Default::default(),
+    });
+    let Some(HoverContents::Markup(markup)) = shown.map(|h| h.contents) else {
+        panic!("no hover");
+    };
+    assert!(markup.value.contains("Notes in the music take their octave"), "{}", markup.value);
 }

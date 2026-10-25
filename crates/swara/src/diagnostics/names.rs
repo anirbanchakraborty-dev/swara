@@ -1,7 +1,7 @@
 //! Commands nothing defines, and note names the active language does not have.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use lsp_types::Diagnostic;
 use tree_sitter::Node;
@@ -11,13 +11,13 @@ use crate::arity::{Signatures, bind_with};
 use crate::commanddata::{ArgKind, CommandData};
 use crate::document::Document;
 use crate::file_uri;
-use crate::index::{DEFAULT_LANGUAGE, Index, Languages, summarize};
+use crate::index::{DEFAULT_LANGUAGE, Index, Languages, visible_definitions};
 use crate::line_index::Encoding;
 use crate::node_text;
 
 /// Words LilyPond's lexer and parser handle themselves, which no command data lists: keywords,
 /// the units after a number in `\paper`, and a few names its own files use.
-const KEYWORDS: &[&str] = &[
+pub(crate) const KEYWORDS: &[&str] = &[
     "accepts",
     "addlyrics",
     "alias",
@@ -83,8 +83,8 @@ const KEYWORDS: &[&str] = &[
 ];
 
 /// Which names a note is checked against.
-#[derive(Clone, Copy, PartialEq)]
-enum Table {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Table {
     Pitches,
     Drums,
     /// Chord, lyric and figure modes, markup, and the output blocks, where words are not notes.
@@ -98,6 +98,18 @@ struct State {
     in_markup: bool,
 }
 
+/// How a word typed at one position would be read.
+pub(crate) struct Place {
+    pub table: Table,
+    pub languages: Languages,
+    pub in_markup: bool,
+    /// The word is an argument a function takes as a name or markup, such as the `treble` in
+    /// `\clef treble`, so it is not a note.
+    pub argument: bool,
+    /// The position is outside every block, where a word names an assignment.
+    pub top_level: bool,
+}
+
 /// Every unknown command and invalid note name in `doc`. Nothing is reported until LilyPond's
 /// command data has loaded, since until then every name is unknown.
 pub fn name_checks(
@@ -107,19 +119,30 @@ pub fn name_checks(
     enc: Encoding,
 ) -> Vec<Diagnostic> {
     let Some(data) = data else { return Vec::new() };
+    run(doc, data, index, enc, None).0
+}
+
+/// How a word typed at byte `pos` of `doc` would be read, found by the same walk the checks make,
+/// stopped at `pos`.
+pub(crate) fn place_at(doc: &Document, pos: usize, data: &CommandData, index: &Index) -> Place {
+    run(doc, data, index, Encoding::Utf8, Some(pos))
+        .1
+        .expect("the walk stops at every position in the file")
+}
+
+/// The checks, or with `probe` set, the place at that byte and no checks.
+fn run(
+    doc: &Document,
+    data: &CommandData,
+    index: &Index,
+    enc: Encoding,
+    probe: Option<usize>,
+) -> (Vec<Diagnostic>, Option<Place>) {
     let path = file_uri::to_path(&doc.uri);
-    let own = summarize(
-        &doc.tree,
-        &doc.text,
-        path.as_deref().unwrap_or(Path::new("")),
-    );
-    let visible = path
-        .as_deref()
-        .map(|p| index.definitions_visible_from(p))
-        .unwrap_or_default();
+    let visible = visible_definitions(doc, index);
     let mut defined = HashSet::new();
     let mut functions = HashMap::new();
-    for definition in own.definitions.iter().chain(&visible) {
+    for definition in &visible {
         defined.insert(definition.name.as_str());
         if let Some(signature) = &definition.signature {
             functions
@@ -143,6 +166,8 @@ pub fn name_checks(
             own: &functions,
         },
         found: Vec::new(),
+        probe,
+        place: None,
     };
     let mut state = State {
         languages,
@@ -150,7 +175,7 @@ pub fn name_checks(
         in_markup: false,
     };
     checker.walk(doc.tree.root_node(), &mut state);
-    checker.found
+    (checker.found, checker.place)
 }
 
 struct Checker<'a> {
@@ -162,6 +187,9 @@ struct Checker<'a> {
     defined: HashSet<&'a str>,
     signatures: Signatures<'a>,
     found: Vec<Diagnostic>,
+    /// The byte to stop at and report the place of, instead of checking.
+    probe: Option<usize>,
+    place: Option<Place>,
 }
 
 impl Checker<'_> {
@@ -186,6 +214,26 @@ impl Checker<'_> {
             }
         }
         for (i, &child) in children.iter().enumerate() {
+            if let Some(pos) = self.probe {
+                if child.start_byte() >= pos {
+                    self.stop(parent, state, false);
+                    return;
+                }
+                if holds(child, pos, text) {
+                    match child.kind() {
+                        // A bare word the parser could not place is a `note_name` on its own.
+                        "note" | "note_name" | "command" => {
+                            let argument = not_notes.contains(&child.id());
+                            self.stop(parent, state, argument);
+                        }
+                        kind => {
+                            let mut inner = scoped(kind, state).unwrap_or_else(|| state.clone());
+                            self.walk(child, &mut inner);
+                        }
+                    }
+                    return;
+                }
+            }
             match child.kind() {
                 "language" => {
                     if let Some(name) = child.child_by_field_name("name") {
@@ -224,6 +272,30 @@ impl Checker<'_> {
                 },
             }
         }
+        // The position is in `parent` after its last child, or after everything in the file.
+        if let Some(pos) = self.probe
+            && self.place.is_none()
+            && (parent.parent().is_none() || holds(parent, pos, text))
+        {
+            self.stop(parent, state, false);
+        }
+    }
+
+    fn stop(&mut self, parent: Node, state: &State, argument: bool) {
+        // A word the parser could not place is still at the top level when nothing encloses it.
+        let mut outer = parent;
+        while outer.is_error()
+            && let Some(up) = outer.parent()
+        {
+            outer = up;
+        }
+        self.place = Some(Place {
+            table: state.table,
+            languages: state.languages.clone(),
+            in_markup: state.in_markup,
+            argument,
+            top_level: outer.parent().is_none(),
+        });
     }
 
     fn include(&self, state: &mut State, file: &str) {
@@ -238,7 +310,8 @@ impl Checker<'_> {
     }
 
     fn check_command(&mut self, node: Node, name: &str, in_markup: bool) {
-        if KEYWORDS.contains(&name)
+        if self.probe.is_some()
+            || KEYWORDS.contains(&name)
             || self.data.is_known_command(name, in_markup)
             || self.defined.contains(name)
         {
@@ -258,6 +331,9 @@ impl Checker<'_> {
     }
 
     fn check_note(&mut self, note: Node, state: &State) {
+        if self.probe.is_some() {
+            return;
+        }
         let Some(word) = note
             .child_by_field_name("pitch")
             .and_then(|p| p.named_child(0))
@@ -312,6 +388,15 @@ fn set_language(state: &mut State, name: String) {
         state.languages = Some(BTreeSet::from([name]));
         state.table = Table::Pitches;
     }
+}
+
+/// Whether a word typed at byte `pos` belongs to `node`: it starts before `pos` and ends after it,
+/// or ends at `pos` without a closing bracket or quote, which a word typed there would follow.
+pub(crate) fn holds(node: Node, pos: usize, text: &str) -> bool {
+    node.start_byte() < pos
+        && (pos < node.end_byte()
+            || (pos == node.end_byte()
+                && !text[..pos].ends_with(['}', '>', ')', ']', '"'])))
 }
 
 /// The state inside a node that keeps its own, or `None` for one that shares its parent's.

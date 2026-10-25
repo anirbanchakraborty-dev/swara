@@ -13,6 +13,7 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::commanddata::Arg;
 use crate::document::Document;
+use crate::file_uri;
 use crate::node_text;
 
 /// The note-name language LilyPond starts in.
@@ -59,6 +60,20 @@ impl Summary {
                 .zip(&other.definitions)
                 .all(|(a, b)| a.name == b.name && a.signature == b.signature)
     }
+}
+
+/// What `doc` can name: its own definitions, then those of the files it reaches through includes
+/// and of the open files that include it. A name defined in two files appears twice.
+pub fn visible_definitions(doc: &Document, index: &Index) -> Vec<Definition> {
+    let path = file_uri::to_path(&doc.uri);
+    let own = summarize(&doc.tree, &doc.text, path.as_deref().unwrap_or(Path::new("")));
+    let mut definitions = own.definitions;
+    if let Some(path) = &path {
+        // The index holds this file too, perhaps from an older version of it.
+        let others = index.definitions_visible_from(path).into_iter();
+        definitions.extend(others.filter(|d| d.path != *path));
+    }
+    definitions
 }
 
 /// The Scheme forms that make a function a music function can call with arguments.

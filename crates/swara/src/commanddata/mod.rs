@@ -104,8 +104,6 @@ impl Arg {
 }
 
 /// A music function, or a markup or markup-list command.
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Function {
     pub name: String,
@@ -116,8 +114,6 @@ pub struct Function {
     pub list: bool,
 }
 
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Grob {
     pub name: String,
@@ -125,17 +121,12 @@ pub struct Grob {
     pub doc: Option<String>,
 }
 
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Interface {
     pub name: String,
     pub props: Vec<String>,
-    pub doc: Option<String>,
 }
 
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Property {
     pub name: String,
@@ -145,8 +136,6 @@ pub struct Property {
 }
 
 /// A context or a translator.
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct Described {
     pub name: String,
@@ -199,8 +188,6 @@ pub struct CommandData {
     drums: HashSet<String>,
 }
 
-// The names checks, completion and hover read these, in later tasks.
-#[allow(dead_code)]
 impl CommandData {
     pub fn music_function(&self, name: &str) -> Option<&Function> {
         self.music_functions.get(name)
@@ -236,6 +223,30 @@ impl CommandData {
 
     pub fn context(&self, name: &str) -> Option<&Described> {
         self.contexts.get(name)
+    }
+
+    /// The markup and markup-list commands.
+    pub fn markups(&self) -> impl Iterator<Item = &Function> {
+        self.markups.values()
+    }
+
+    pub fn identifiers(&self) -> impl Iterator<Item = (&str, IdentifierKind)> {
+        self.identifiers.iter().map(|(name, kind)| (name.as_str(), *kind))
+    }
+
+    pub fn contexts(&self) -> impl Iterator<Item = &Described> {
+        self.contexts.values()
+    }
+
+    pub fn grobs(&self) -> impl Iterator<Item = &Grob> {
+        self.grobs.values()
+    }
+
+    pub fn properties(&self, scope: Scope) -> impl Iterator<Item = &Property> {
+        match scope {
+            Scope::Backend => self.backend_properties.values(),
+            Scope::Context => self.context_properties.values(),
+        }
     }
 
     /// The note names of one language, such as `english`.
