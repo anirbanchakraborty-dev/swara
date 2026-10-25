@@ -74,6 +74,57 @@ fn one_check_after_typing_stops() {
 }
 
 #[test]
+fn signal_stops_the_server_cleanly() {
+    // An editor that quits may end the server with SIGTERM or SIGHUP rather than `exit`. The
+    // server still stops its LilyPond and removes its work folder.
+    for signal in [libc::SIGTERM, libc::SIGHUP] {
+        let dir = scratch(&format!("signal-{signal}"));
+        let tmp = dir.join("tmp");
+        fs::create_dir_all(&tmp).unwrap();
+        let env = [("TMPDIR", tmp.to_str().unwrap())];
+        let (mut client, fake) = start(&dir, "sleep:5", true, &env);
+        let file = file_uri(&dir.join("lesson.ly"));
+        client.open(&file, "{ c'4 }\n");
+        insert(&mut client, &file, 2, Position::new(0, 2), "d ");
+        assert!(
+            wait_until(WAIT, || fake.pids().len() == 2),
+            "the check never started"
+        );
+        assert_eq!(work_folders(&tmp).len(), 1, "{:?}", work_folders(&tmp));
+        let status = client.signal(signal);
+        assert!(status.is_some(), "signal {signal} did not stop the server");
+        assert_all_gone(&fake, 2);
+        assert!(work_folders(&tmp).is_empty(), "{:?}", work_folders(&tmp));
+    }
+}
+
+#[test]
+fn checks_end_on_their_own_signals() {
+    // The server catches SIGTERM for itself. A LilyPond it starts must still end on one.
+    let dir = scratch("term");
+    let (mut client, fake) = start(&dir, "term,sleep:5", true, &[]);
+    let file = file_uri(&dir.join("lesson.ly"));
+    client.open(&file, "{ c'4 }\n");
+    insert(&mut client, &file, 2, Position::new(0, 2), "d ");
+    assert!(
+        wait_until(WAIT, || fake.runs().len() == 1),
+        "the check never started"
+    );
+    sleep(Duration::from_millis(500));
+    // A run that outlived its SIGTERM went on to start its grandchild.
+    assert_eq!(fake.pids().len(), 1, "{:?}", fake.pids());
+}
+
+/// The servers' work folders in `tmp`.
+fn work_folders(tmp: &Path) -> Vec<String> {
+    fs::read_dir(tmp)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("swara-"))
+        .collect()
+}
+
+#[test]
 fn stale_check_killed() {
     let dir = scratch("stale");
     let mode = format!("stderr:{},sleep:5", fixture("parse-error.stderr").display());

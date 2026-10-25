@@ -50,7 +50,7 @@ use crate::lilypond::messages::{self, LyFile};
 use crate::lilypond::run::{self, RunKind, RunResult, Running};
 use crate::lilypond::to_diagnostic;
 use crate::line_index::{Encoding, LineIndex};
-use crate::symbols;
+use crate::{signals, symbols};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -85,9 +85,18 @@ impl Default for Config {
 }
 
 pub fn run() -> ExitCode {
+    // First, while no other thread can start a child before the signal pipe is closed on exec.
+    let signals = signals::watch();
     let (connection, io_threads) = Connection::stdio();
-    let served = serve(&connection);
+    let served = serve(&connection, signals);
     drop(connection);
+    let served = match served {
+        // The thread reading standard input waits on the editor, which may still hold it open, so
+        // it is not joined: the process ending stops it.
+        Ok(Some(signal)) => return ExitCode::from(u8::try_from(128 + signal).unwrap_or(1)),
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
     let joined = io_threads.join();
     match served.and(joined.map_err(Into::into)) {
         Ok(()) => ExitCode::SUCCESS,
@@ -98,7 +107,9 @@ pub fn run() -> ExitCode {
     }
 }
 
-fn serve(connection: &Connection) -> Result<()> {
+/// Serves `connection` until the client leaves, or until a signal arrives on `signals`, whose
+/// number it then returns.
+fn serve(connection: &Connection, signals: Receiver<i32>) -> Result<Option<i32>> {
     let (id, params) = connection.initialize_start()?;
     let params: InitializeParams = serde_json::from_value(params)?;
     let encoding = negotiate(&params);
@@ -117,7 +128,7 @@ fn serve(connection: &Connection) -> Result<()> {
         }),
     };
     connection.initialize_finish(id, serde_json::to_value(result)?)?;
-    Server::new(connection, encoding, config).main_loop()
+    Server::new(connection, encoding, config).main_loop(signals)
 }
 
 /// UTF-8 when the client offers it, since that is how the text is stored, and otherwise UTF-16,
@@ -276,26 +287,27 @@ impl<'c> Server<'c> {
         }
     }
 
-    fn main_loop(&mut self) -> Result<()> {
+    fn main_loop(&mut self, mut signals: Receiver<i32>) -> Result<Option<i32>> {
         let connection = self.connection;
         let results = self.results.clone();
         self.load_command_data()?;
         loop {
             let deadline = self.next_deadline().map_or_else(never, at);
             let data_results = self.data_results.clone();
+            let signal = signals.clone();
             select! {
                 recv(connection.receiver) -> message => {
                     // The client went away without saying goodbye.
-                    let Ok(message) = message else { return Ok(()) };
+                    let Ok(message) = message else { return Ok(None) };
                     match message {
                         Message::Request(request) => {
                             if connection.handle_shutdown(&request)? {
-                                return Ok(());
+                                return Ok(None);
                             }
                             self.request(request)?;
                         }
                         Message::Notification(notification) if notification.method == Exit::METHOD => {
-                            return Ok(());
+                            return Ok(None);
                         }
                         Message::Notification(notification) => self.notification(notification)?,
                         Message::Response(_) => {}
@@ -324,6 +336,12 @@ impl<'c> Server<'c> {
                         Err(_) => {}
                     }
                 }
+                recv(signal) -> signal => match signal {
+                    // Returning drops the server, which stops every run and removes the work folder.
+                    Ok(signal) => return Ok(Some(signal)),
+                    // The watcher has gone, and with it any signal to wait for.
+                    Err(_) => signals = never(),
+                },
                 recv(deadline) -> _ => {}
             }
             self.fire_due()?;
@@ -722,6 +740,9 @@ impl<'c> Server<'c> {
         };
         let includes = self.include_paths(&path);
         let stdin = unsaved.then(|| doc.text.clone());
+        if let Some(dir) = path.parent() {
+            run::sweep_dead(dir, ".swara-build-");
+        }
         let spec = build::build_spec(uri, lilypond, &path, stdin, doc.version, &includes);
         let out_dir = spec.out_dir.clone();
         // On a save the file on disk is the open text, so the open text places the messages.

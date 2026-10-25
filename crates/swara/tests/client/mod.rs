@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::str::FromStr;
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
@@ -306,8 +306,31 @@ impl TestClient {
     }
 }
 
+impl TestClient {
+    /// Sends `signal` to the server, as an editor that quits without `exit` may, and waits for it
+    /// to end. `None` when it is still running after the wait.
+    #[cfg(unix)]
+    pub fn signal(&mut self, signal: i32) -> Option<ExitStatus> {
+        let pid = i32::try_from(self.child.id()).unwrap();
+        // SAFETY: kill only sends a signal, to the server this client started.
+        unsafe { libc::kill(pid, signal) };
+        let deadline = Instant::now() + REPLY_WAIT;
+        while Instant::now() < deadline {
+            if let Ok(Some(status)) = self.child.try_wait() {
+                return Some(status);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+}
+
 impl Drop for TestClient {
     fn drop(&mut self) {
+        // A server that has ended already cannot be asked to shut down.
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return;
+        }
         if !std::thread::panicking() {
             self.next_id += 1;
             let id = RequestId::from(self.next_id);

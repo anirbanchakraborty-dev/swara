@@ -9,6 +9,7 @@
 #                then sleep N seconds
 #   stderr:FILE  print FILE to standard error, and exit 1 once the steps are done
 #   stdin        copy standard input to $SWARA_FAKE_LOG.stdin
+#   term         send itself SIGTERM, which ends it unless the signal is blocked
 #   write:EXT    write one line to the -o name with .EXT added, as LilyPond writes its output
 if [ "$1" = --version ]; then
   [ -n "$SWARA_FAKE_VERSION" ] && echo "GNU LilyPond $SWARA_FAKE_VERSION"
@@ -41,6 +42,9 @@ for step in $SWARA_FAKE_MODE; do
       ;;
     stdin)
       cat > "$SWARA_FAKE_LOG.stdin"
+      ;;
+    term)
+      kill -TERM $$
       ;;
     write:*)
       echo "fake ${step#write:}" > "$out.${step#write:}"

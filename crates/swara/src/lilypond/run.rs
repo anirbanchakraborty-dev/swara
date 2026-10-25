@@ -273,6 +273,7 @@ pub(crate) fn work_dir() -> io::Result<PathBuf> {
 /// runs that file as Scheme, and on Linux the temporary folder is shared by every user, so the
 /// name cannot be guessed, and a name already taken is passed over rather than used.
 fn make_work_dir(base: &Path) -> io::Result<PathBuf> {
+    sweep_dead(base, "swara-");
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
@@ -304,6 +305,49 @@ fn make_work_dir(base: &Path) -> io::Result<PathBuf> {
         io::ErrorKind::AlreadyExists,
         "every name tried for the work folder was taken",
     ))
+}
+
+/// Removes each folder in `dir` named `prefix`, a pid, a dash and anything after, whose process
+/// has ended. A server stopped by SIGKILL, or by a crash, leaves such folders behind. Only this
+/// user's folders go. On Windows nothing goes, since there is no cheap way there to ask after a
+/// pid.
+pub(crate) fn sweep_dead(dir: &Path, prefix: &str) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        // SAFETY: geteuid takes nothing and cannot fail.
+        let me = unsafe { libc::geteuid() };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let pid = name
+                .to_str()
+                .and_then(|name| name.strip_prefix(prefix))
+                .and_then(|rest| rest.split_once('-'))
+                .and_then(|(pid, _)| pid.parse::<i32>().ok());
+            let Some(pid) = pid.filter(|&pid| pid > 0) else {
+                continue;
+            };
+            let path = entry.path();
+            let mine =
+                fs::symlink_metadata(&path).is_ok_and(|meta| meta.is_dir() && meta.uid() == me);
+            if mine && !running(pid) {
+                let _ = fs::remove_dir_all(&path);
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = (dir, prefix);
+}
+
+/// Whether process `pid` exists. One that belongs to another user answers EPERM, and counts.
+#[cfg(unix)]
+fn running(pid: i32) -> bool {
+    // SAFETY: signal 0 delivers nothing; it only asks whether the process exists.
+    let answered = unsafe { libc::kill(pid, 0) } == 0;
+    answered || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Whether `dir` is still a work folder this server can trust: a folder and not a link to one,
@@ -392,6 +436,39 @@ mod tests {
             !stderr.contains("warning") && !stderr.contains("error"),
             "{stderr}"
         );
+    }
+
+    #[test]
+    fn dead_servers_work_folders_swept() {
+        let base = base("sweep");
+        let mut child = Command::new("true").spawn().unwrap();
+        let dead = child.id();
+        child.wait().unwrap();
+        // The test's own parent is running.
+        // SAFETY: getppid takes nothing and cannot fail.
+        let running = unsafe { libc::getppid() };
+        let names = [
+            format!("swara-{dead}-00000000000000aa"),
+            format!("swara-{running}-00000000000000bb"),
+            format!("swara-{dead}-file"),
+            "swara-unit-other".to_owned(),
+        ];
+        fs::create_dir_all(base.join(&names[0]).join("preview")).unwrap();
+        fs::create_dir(base.join(&names[1])).unwrap();
+        fs::write(base.join(&names[2]), "").unwrap();
+        fs::create_dir(base.join(&names[3])).unwrap();
+        let made = make_work_dir(&base).unwrap();
+        let mut left: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| *path != made)
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        left.sort();
+        let mut kept = names[1..].to_vec();
+        kept.sort();
+        assert_eq!(left, kept);
+        fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

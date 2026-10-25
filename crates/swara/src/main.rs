@@ -15,6 +15,7 @@ mod line_index;
 mod node_text;
 mod play;
 mod server;
+mod signals;
 mod symbols;
 #[cfg(test)]
 mod testing;

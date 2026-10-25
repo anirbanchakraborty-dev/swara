@@ -69,6 +69,14 @@ pub fn wait_until(timeout: Duration, mut done: impl FnMut() -> bool) -> bool {
     }
 }
 
+/// The pid of a process that has ended.
+pub fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
 pub fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 delivers nothing; it only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::thread::{self, sleep};
 use std::time::Duration;
 
-use client::fake::{alive, assert_all_gone, start, wait_until};
+use client::fake::{alive, assert_all_gone, dead_pid, start, wait_until};
 use client::{TestClient, uri};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Uri};
 use serde_json::{Value, json};
@@ -136,6 +136,21 @@ fn save_runs_lilypond_on_the_file() {
         runs[0].ends_with(&format!("/lesson 1 {}", path.display())),
         "{runs:?}"
     );
+}
+
+#[test]
+fn dead_servers_build_folders_swept() {
+    // A server killed during a build leaves its output folder beside the score. The next build
+    // there removes it once that server has ended, and leaves a running server's folder alone.
+    let dir = scratch("dead-builds");
+    let dead = format!(".swara-build-{}-7", dead_pid());
+    let running = format!(".swara-build-{}-7", std::process::id());
+    fs::create_dir_all(dir.join(&dead).join("lesson")).unwrap();
+    fs::create_dir_all(dir.join(&running)).unwrap();
+    let (mut client, _fake) = start(&dir, "write:pdf", false, &[]);
+    open_and_save(&mut client, &dir.join("lesson.ly"), LESSON);
+    client.wait_notification(FINISHED, WAIT);
+    assert_eq!(build_folders(&dir), [running]);
 }
 
 #[test]
