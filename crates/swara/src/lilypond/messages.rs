@@ -1,6 +1,6 @@
 //! Reading LilyPond's messages from its standard error.
 //!
-//! Every run passes `-l WARNING` and `LC_ALL=C`, so standard error holds only messages, in
+//! Every run passes `-l WARNING` and asks for English, so standard error holds only messages, in
 //! English. A message is one line, `FILE:LINE:COL: SEVERITY: TEXT`, with the location, the
 //! severity or both left out in some messages. When there is a column, two context lines follow
 //! somewhere below it: the source line up to the column, then the rest of it indented by the
@@ -34,7 +34,7 @@ pub struct LyMessage {
     pub text: String,
 }
 
-/// The severity words LilyPond prints, in English because every run sets `LC_ALL=C`.
+/// The severity words LilyPond prints, in English because every run asks for it.
 const SEVERITIES: [(&str, Severity); 4] = [
     ("programming error", Severity::ProgrammingError),
     ("fatal error", Severity::Error),

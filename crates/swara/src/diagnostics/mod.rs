@@ -28,10 +28,34 @@ impl Layers {
     /// Moves the `check` and `build` entries after an edit. An entry inside the edited range is
     /// pinned to the range's start. `instant` is rebuilt from the tree after every edit instead.
     pub fn shift(&mut self, edit: &InputEdit) {
-        for diagnostic in self.check.iter_mut().chain(&mut self.build) {
-            diagnostic.range.start = shift_position(diagnostic.range.start, edit);
-            diagnostic.range.end = shift_position(diagnostic.range.end, edit);
-        }
+        shift_all(&mut self.check, edit);
+        shift_all(&mut self.build, edit);
+    }
+
+    pub fn set_check(&mut self, diagnostics: Vec<Diagnostic>) {
+        self.check = diagnostics;
+        self.drop_repeats();
+    }
+
+    pub fn set_build(&mut self, diagnostics: Vec<Diagnostic>) {
+        self.build = diagnostics;
+        self.drop_repeats();
+    }
+
+    /// A check and a build both report the parse errors, and the editor would show each twice.
+    /// The build keeps only what the check does not hold, which leaves the engraving warnings.
+    /// Both layers move through the same edits, so a message both found stays equal in both.
+    fn drop_repeats(&mut self) {
+        let check = &self.check;
+        self.build.retain(|d| !check.contains(d));
+    }
+}
+
+/// Moves each of `diagnostics` after an edit, as `Layers::shift` does.
+pub fn shift_all(diagnostics: &mut [Diagnostic], edit: &InputEdit) {
+    for diagnostic in diagnostics {
+        diagnostic.range.start = shift_position(diagnostic.range.start, edit);
+        diagnostic.range.end = shift_position(diagnostic.range.end, edit);
     }
 }
 
@@ -119,9 +143,9 @@ mod tests {
     #[test]
     fn layers_shift() {
         let mut layers = Layers {
-            instant: vec![],
             check: vec![spanning(10, 2, 6), spanning(1, 2, 6)],
             build: vec![spanning(10, 0, 3)],
+            ..Layers::default()
         };
         // Two lines inserted at the start of line 3.
         layers.shift(&edit((3, 0), (3, 0), (5, 0)));
@@ -133,9 +157,8 @@ mod tests {
     #[test]
     fn shift_on_the_edited_line() {
         let mut layers = Layers {
-            instant: vec![],
             check: vec![spanning(4, 3, 5), spanning(4, 7, 8), spanning(4, 0, 4)],
-            build: vec![],
+            ..Layers::default()
         };
         // Columns 2 to 6 of line 4 replaced by two bytes.
         layers.shift(&edit((4, 2), (4, 6), (4, 4)));
@@ -154,5 +177,36 @@ mod tests {
         };
         let lines: Vec<u32> = layers.merged().iter().map(|d| d.range.start.line).collect();
         assert_eq!(lines, [0, 1, 2]);
+    }
+
+    fn lines(diagnostics: &[Diagnostic]) -> Vec<u32> {
+        diagnostics.iter().map(|d| d.range.start.line).collect()
+    }
+
+    #[test]
+    fn build_keeps_only_what_the_check_missed() {
+        let mut layers = Layers::default();
+        layers.set_check(vec![spanning(1, 0, 1)]);
+        layers.set_build(vec![spanning(1, 0, 1), spanning(5, 0, 1)]);
+        assert_eq!(lines(&layers.build), [5]);
+        assert_eq!(lines(&layers.merged()), [1, 5]);
+    }
+
+    #[test]
+    fn check_arriving_after_the_build_trims_it() {
+        let mut layers = Layers::default();
+        layers.set_build(vec![spanning(1, 0, 1), spanning(5, 0, 1)]);
+        layers.set_check(vec![spanning(1, 0, 1)]);
+        assert_eq!(lines(&layers.build), [5]);
+    }
+
+    #[test]
+    fn build_only_messages_outlive_later_checks() {
+        let mut layers = Layers::default();
+        layers.set_build(vec![spanning(5, 0, 1)]);
+        layers.set_check(vec![spanning(1, 0, 1)]);
+        layers.shift(&edit((0, 0), (0, 0), (2, 0)));
+        layers.set_check(vec![]);
+        assert_eq!(lines(&layers.build), [7]);
     }
 }

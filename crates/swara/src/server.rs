@@ -11,10 +11,10 @@ use std::thread;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, at, never, select};
-use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
+use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, LogMessage,
-    Notification as _, PublishDiagnostics, ShowMessage,
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument, Exit,
+    LogMessage, Notification as _, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, ExecuteCommand, Formatting, GotoDefinition, HoverRequest,
@@ -24,7 +24,8 @@ use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
     DidChangeTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Range,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandOptions,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    ExecuteCommandOptions, ExecuteCommandParams,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
     OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
     ServerInfo, ShowMessageParams, TextDocumentIdentifier,
@@ -33,8 +34,9 @@ use lsp_types::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tree_sitter::{Node, Parser};
+use tree_sitter::{InputEdit, Node, Parser};
 
+use crate::build::{self, BuildFinished, Outputs};
 use crate::commanddata::{self, CommandData};
 use crate::completion;
 use crate::definition;
@@ -47,7 +49,7 @@ use crate::index::Index;
 use crate::info;
 use crate::line_index::{Encoding, LineIndex};
 use crate::lilypond::messages::{self, LyFile};
-use crate::lilypond::run::{self, RunResult, Running};
+use crate::lilypond::run::{self, RunKind, RunResult, Running};
 use crate::lilypond::to_diagnostic;
 use crate::symbols;
 
@@ -55,6 +57,10 @@ type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
 /// The commands `workspace/executeCommand` accepts.
 const COMMANDS: [&str; 2] = ["swara.build", "swara.preview"];
+
+/// The preview's resolution in dots per inch when the command names none, and the most it allows.
+const DEFAULT_DPI: u32 = 150;
+const MAX_DPI: u64 = 2400;
 
 /// The client's `initializationOptions`.
 #[derive(Debug, Deserialize)]
@@ -168,6 +174,35 @@ impl Check {
     }
 }
 
+/// A build in progress for an open file, with what it needs to place its messages once it ends.
+struct Build {
+    running: Running,
+    out_dir: PathBuf,
+    path: PathBuf,
+    started: Instant,
+    /// The text LilyPond read, whose lines and columns its messages count in.
+    text: String,
+    index: LineIndex,
+    /// The edits made since it started, which move its messages, or `None` once the whole text
+    /// has been replaced and nothing it says can be placed.
+    edits: Option<Vec<InputEdit>>,
+}
+
+impl Build {
+    fn stop(self) {
+        self.running.stop();
+        let _ = fs::remove_dir_all(&self.out_dir);
+    }
+}
+
+/// A preview in progress, answered with its image when it ends.
+struct Preview {
+    running: Running,
+    out_dir: PathBuf,
+    png: PathBuf,
+    request: RequestId,
+}
+
 struct Server<'c> {
     connection: &'c Connection,
     encoding: Encoding,
@@ -180,9 +215,13 @@ struct Server<'c> {
     /// When each file's check is due, once typing has paused.
     pauses: HashMap<Uri, Instant>,
     checks: HashMap<Uri, Check>,
-    /// Diagnostics for files a check's root file included, by root and then by path. Their
-    /// positions are already in the client's encoding.
-    included: HashMap<Uri, HashMap<PathBuf, Vec<Diagnostic>>>,
+    /// Diagnostics for files a run's root file included, by root and kind of run, then by path.
+    /// Their positions are already in the client's encoding.
+    included: HashMap<(Uri, RunKind), HashMap<PathBuf, Vec<Diagnostic>>>,
+    builds: HashMap<Uri, Build>,
+    previews: HashMap<Uri, Preview>,
+    /// The folder of the image each file's last preview answered with, kept until the next one.
+    shown: HashMap<Uri, PathBuf>,
     /// The `lilypond` on `PATH`, looked up the first time a check needs it.
     found_lilypond: Option<Option<PathBuf>>,
     /// What the installed LilyPond defines, once it has loaded.
@@ -215,6 +254,9 @@ impl<'c> Server<'c> {
             pauses: HashMap::new(),
             checks: HashMap::new(),
             included: HashMap::new(),
+            builds: HashMap::new(),
+            previews: HashMap::new(),
+            shown: HashMap::new(),
             found_lilypond: None,
             data: None,
             index,
@@ -292,10 +334,12 @@ impl<'c> Server<'c> {
     }
 
     /// When the loop next has something to do without being asked: a check whose pause is over,
-    /// or one that has run too long.
+    /// or a run that has gone on too long.
     fn next_deadline(&self) -> Option<Instant> {
         let checks = self.checks.values().map(|check| check.running.deadline);
-        self.pauses.values().copied().chain(checks).min()
+        let builds = self.builds.values().map(|build| build.running.deadline);
+        let previews = self.previews.values().map(|preview| preview.running.deadline);
+        self.pauses.values().copied().chain(checks).chain(builds).chain(previews).min()
     }
 
     fn fire_due(&mut self) -> Result<()> {
@@ -306,14 +350,14 @@ impl<'c> Server<'c> {
             self.pauses.remove(&uri);
             self.start_check(&uri)?;
         }
-        let late: Vec<Uri> = self
-            .checks
-            .iter()
-            .filter(|(_, check)| check.running.deadline <= now)
-            .map(|(uri, _)| uri.clone())
-            .collect();
-        for uri in late {
+        for uri in late(&self.checks, now, |check| &check.running) {
             self.time_out(&uri)?;
+        }
+        for uri in late(&self.builds, now, |build| &build.running) {
+            self.time_out_build(&uri)?;
+        }
+        for uri in late(&self.previews, now, |preview| &preview.running) {
+            self.time_out_preview(&uri)?;
         }
         Ok(())
     }
@@ -409,15 +453,52 @@ impl<'c> Server<'c> {
                     Err(error) => invalid(id, &error.to_string()),
                 }
             }
-            ExecuteCommand::METHOD => Response::new_ok(id, Value::Null),
+            ExecuteCommand::METHOD => return self.execute(id, request.params),
             method => Response::new_err(
                 id,
                 ErrorCode::MethodNotFound as i32,
                 format!("swara does not handle {method}"),
             ),
         };
+        self.reply(response)
+    }
+
+    fn reply(&self, response: Response) -> Result<()> {
         self.connection.sender.send(response.into())?;
         Ok(())
+    }
+
+    /// Runs `swara.build` or `swara.preview` on an open file. A build is answered at once and
+    /// reports through `swara/buildFinished`. A preview is answered with its image once it ends.
+    fn execute(&mut self, id: RequestId, params: Value) -> Result<()> {
+        let params: ExecuteCommandParams = match serde_json::from_value(params) {
+            Ok(params) => params,
+            Err(error) => return self.reply(invalid(id, &error.to_string())),
+        };
+        let command = params.command.as_str();
+        if !COMMANDS.contains(&command) {
+            return self.reply(invalid(id, &format!("swara has no command {command}")));
+        }
+        let uri = params.arguments.first().cloned().and_then(|uri| serde_json::from_value(uri).ok());
+        let open = |uri: &Uri| self.documents.contains_key(uri) && file_uri::to_path(uri).is_some();
+        let Some(uri) = uri.filter(open) else {
+            return self.reply(invalid(id, "the first argument must name an open file"));
+        };
+        let Some(lilypond) = self.lilypond() else {
+            return self.reply(failed(id, NOT_FOUND.into()));
+        };
+        if command == "swara.build" {
+            self.reply(Response::new_ok(id, Value::Null))?;
+            return self.start_build(&uri, &lilypond, true);
+        }
+        let dpi = match params.arguments.get(1) {
+            None => DEFAULT_DPI,
+            Some(dpi) => match dpi.as_u64().filter(|dpi| (1..=MAX_DPI).contains(dpi)) {
+                Some(dpi) => dpi as u32,
+                None => return self.reply(invalid(id, "the resolution must be 1 to 2400 dpi")),
+            },
+        };
+        self.start_preview(id, &uri, &lilypond, dpi)
     }
 
     fn notification(&mut self, notification: Notification) -> Result<()> {
@@ -440,14 +521,24 @@ impl<'c> Server<'c> {
                 let uri = params.text_document.uri;
                 let Some(doc) = self.documents.get_mut(&uri) else { return Ok(()) };
                 let layers = self.layers.entry(uri.clone()).or_default();
+                // A running build read the old text, so its messages move with these edits too.
+                let mut build = self.builds.get_mut(&uri);
                 doc.version = params.text_document.version;
                 for change in &params.content_changes {
                     match doc.apply(change, self.encoding, &mut self.parser) {
-                        Some(edit) => layers.shift(&edit),
+                        Some(edit) => {
+                            layers.shift(&edit);
+                            if let Some(edits) = build.as_mut().and_then(|b| b.edits.as_mut()) {
+                                edits.push(edit);
+                            }
+                        }
                         // A whole new text leaves nothing for old positions to point at.
                         None => {
                             layers.check.clear();
                             layers.build.clear();
+                            if let Some(build) = build.as_mut() {
+                                build.edits = None;
+                            }
                         }
                     }
                 }
@@ -466,6 +557,17 @@ impl<'c> Server<'c> {
                     self.pauses.insert(uri, Instant::now() + run::PAUSE);
                 }
             }
+            DidSaveTextDocument::METHOD => {
+                let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)?;
+                let uri = params.text_document.uri;
+                // Without a LilyPond there is nothing to build with, as the start said.
+                if checkable(&uri)
+                    && self.documents.contains_key(&uri)
+                    && let Some(lilypond) = self.lilypond()
+                {
+                    self.start_build(&uri, &lilypond, false)?;
+                }
+            }
             DidCloseTextDocument::METHOD => {
                 let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
@@ -480,7 +582,9 @@ impl<'c> Server<'c> {
                     self.index.close(&path);
                     self.refresh_open(None)?;
                 }
-                self.set_included(&uri, HashMap::new())?;
+                // A build or a preview still running finishes, and reports, as the user asked.
+                self.set_included(&uri, RunKind::Check, HashMap::new())?;
+                self.set_included(&uri, RunKind::Build, HashMap::new())?;
                 match file_uri::to_path(&uri) {
                     // Another open file's check may still have something to say about this one.
                     Some(path) => self.publish_path(&path)?,
@@ -512,8 +616,7 @@ impl<'c> Server<'c> {
         let (Some(doc), Some(path)) = (self.documents.get(uri), file_uri::to_path(uri)) else {
             return Ok(());
         };
-        let dir = path.parent().unwrap_or(Path::new("/"));
-        let includes: Vec<PathBuf> = self.config.include_paths.iter().map(|p| dir.join(p)).collect();
+        let includes = self.include_paths(&path);
         let spec = run::check_spec(uri, &lilypond, &path, &doc.text, doc.version, &includes);
         let started = spec.and_then(|spec| {
             let (uri, version, out_dir) = (spec.uri.clone(), spec.version, spec.out_dir.clone());
@@ -531,57 +634,172 @@ impl<'c> Server<'c> {
             }
             Err(error) => {
                 let message = format!("LilyPond could not be started: {error}");
-                self.layers.entry(uri.clone()).or_default().check = vec![notice(message)];
+                self.layers.entry(uri.clone()).or_default().set_check(vec![notice(message)]);
                 self.publish(uri)?;
             }
         }
         Ok(())
     }
 
+    /// The configured include folders, a relative one taken from the folder of `path`.
+    fn include_paths(&self, path: &Path) -> Vec<PathBuf> {
+        let dir = path.parent().unwrap_or(Path::new("/"));
+        self.config.include_paths.iter().map(|p| dir.join(p)).collect()
+    }
+
+    /// Builds an open file: the file on disk after a save, or with `unsaved` its open text. A
+    /// build already running for the file is stopped first, and reports nothing.
+    fn start_build(&mut self, uri: &Uri, lilypond: &Path, unsaved: bool) -> Result<()> {
+        if let Some(old) = self.builds.remove(uri) {
+            old.stop();
+        }
+        let (Some(doc), Some(path)) = (self.documents.get(uri), file_uri::to_path(uri)) else {
+            return Ok(());
+        };
+        let includes = self.include_paths(&path);
+        let stdin = unsaved.then(|| doc.text.clone());
+        let spec = build::build_spec(uri, lilypond, &path, stdin, doc.version, &includes);
+        let out_dir = spec.out_dir.clone();
+        // On a save the file on disk is the open text, so the open text places the messages.
+        let (text, index) = (doc.text.clone(), doc.index.clone());
+        let started = Instant::now();
+        match run::spawn(spec, self.results_sender.clone()) {
+            Ok(running) => {
+                let edits = Some(Vec::new());
+                let build = Build { running, out_dir, path, started, text, index, edits };
+                self.builds.insert(uri.clone(), build);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_dir_all(&out_dir);
+                let message = format!("LilyPond could not be started: {error}");
+                self.layers.entry(uri.clone()).or_default().set_build(vec![notice(message)]);
+                self.set_included(uri, RunKind::Build, HashMap::new())?;
+                self.publish(uri)?;
+                self.send_finished(uri, Outputs::default(), false, started)
+            }
+        }
+    }
+
+    /// Renders the open text of a file to an image. A preview already running for the file is
+    /// stopped, and its request answered with an error.
+    fn start_preview(&mut self, id: RequestId, uri: &Uri, lilypond: &Path, dpi: u32) -> Result<()> {
+        if let Some(old) = self.previews.remove(uri) {
+            old.running.stop();
+            let _ = fs::remove_dir_all(&old.out_dir);
+            self.reply(failed(old.request, "a newer preview replaced this one".into()))?;
+        }
+        let (Some(doc), Some(path)) = (self.documents.get(uri), file_uri::to_path(uri)) else {
+            return self.reply(invalid(id, "the first argument must name an open file"));
+        };
+        let includes = self.include_paths(&path);
+        let spec =
+            build::preview_spec(uri, lilypond, &path, &doc.text, doc.version, &includes, dpi);
+        let spec = match spec {
+            Ok(spec) => spec,
+            Err(error) => return self.reply(failed(id, format!("no folder for the preview: {error}"))),
+        };
+        let out_dir = spec.out_dir.clone();
+        let png = build::preview_png(&out_dir, &path);
+        match run::spawn(spec, self.results_sender.clone()) {
+            Ok(running) => {
+                self.previews.insert(uri.clone(), Preview { running, out_dir, png, request: id });
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_dir_all(&out_dir);
+                self.reply(failed(id, format!("LilyPond could not be started: {error}")))
+            }
+        }
+    }
+
     /// Publishes a finished check, unless it is no longer the one wanted for its file.
-    fn finished(&mut self, mut result: RunResult) -> Result<()> {
-        let found = self.checks.iter().find(|(_, check)| check.running.id == result.id);
-        let Some(uri) = found.map(|(uri, _)| uri.clone()) else { return Ok(()) };
+    /// Takes the result of whichever run it belongs to. A run stopped since is no longer kept,
+    /// and what it printed is dropped.
+    fn finished(&mut self, result: RunResult) -> Result<()> {
+        let id = result.id;
+        if let Some(uri) = owner(&self.checks, id, |check| &check.running) {
+            return self.check_finished(uri, result);
+        }
+        if let Some(uri) = owner(&self.builds, id, |build| &build.running) {
+            return self.build_finished(uri, result);
+        }
+        if let Some(uri) = owner(&self.previews, id, |preview| &preview.running) {
+            return self.preview_finished(uri);
+        }
+        Ok(())
+    }
+
+    fn check_finished(&mut self, uri: Uri, result: RunResult) -> Result<()> {
         let Some(check) = self.checks.remove(&uri) else { return Ok(()) };
         let version = check.version;
         // Its standard error has closed, but whatever it started may still be running.
-        result.status = check.running.stop();
-        let _ = fs::remove_dir_all(&check.out_dir);
+        check.stop();
         let (Some(doc), Some(path)) = (self.documents.get(&uri), file_uri::to_path(&uri)) else {
             return Ok(());
         };
         if doc.version != version {
             return Ok(());
         }
-        let dir = path.parent().unwrap_or(Path::new("/"));
-        let mut own = Vec::new();
-        let mut others: HashMap<PathBuf, (String, LineIndex, Vec<Diagnostic>)> = HashMap::new();
-        for message in messages::parse_stderr(&result.stderr) {
-            match &message.file {
-                Some(LyFile::Path(named)) if dir.join(named) != path => {
-                    // LilyPond read the included file from disk, so its positions are counted
-                    // in the text on disk.
-                    let (text, index, found) = others.entry(dir.join(named)).or_insert_with_key(|p| {
-                        let text = fs::read_to_string(p).unwrap_or_default();
-                        let index = LineIndex::new(&text);
-                        (text, index, Vec::new())
-                    });
-                    found.push(to_diagnostic(&message, text, index));
-                }
-                // `-` is the file itself, and so is a message that names no file.
-                _ => own.push(to_diagnostic(&message, &doc.text, &doc.index)),
-            }
-        }
-        let encoding = self.encoding;
-        let others = others
-            .into_iter()
-            .map(|(p, (text, index, found))| (p, diagnostics::convert(found, &text, &index, encoding)))
-            .collect();
+        let (own, others) = place(&result.stderr, &path, &doc.text, &doc.index, self.encoding);
         if let Some(layers) = self.layers.get_mut(&uri) {
-            layers.check = own;
+            layers.set_check(own);
         }
-        self.set_included(&uri, others)?;
+        self.set_included(&uri, RunKind::Check, others)?;
         self.publish(&uri)
+    }
+
+    /// Moves what a build wrote beside its source, shows what it said, and tells the plugin. Its
+    /// messages are placed in the text it read, then moved through every edit made since.
+    fn build_finished(&mut self, uri: Uri, result: RunResult) -> Result<()> {
+        let Some(build) = self.builds.remove(&uri) else { return Ok(()) };
+        let Build { running, out_dir, path, started, text, index, edits, .. } = build;
+        let status = running.stop();
+        let dir = path.parent().unwrap_or(Path::new("/"));
+        let outputs = build::move_outputs(&out_dir, dir, &path);
+        if self.documents.contains_key(&uri) {
+            let (mut own, others) = place(&result.stderr, &path, &text, &index, self.encoding);
+            match edits {
+                Some(edits) => edits.iter().for_each(|edit| diagnostics::shift_all(&mut own, edit)),
+                None => own.clear(),
+            }
+            if let Some(layers) = self.layers.get_mut(&uri) {
+                layers.set_build(own);
+            }
+            self.set_included(&uri, RunKind::Build, others)?;
+            self.publish(&uri)?;
+        }
+        let success = status.is_some_and(|status| status.success());
+        self.send_finished(&uri, outputs, success, started)
+    }
+
+    /// Answers a preview with its image, and lets go of the image it answered with before.
+    fn preview_finished(&mut self, uri: Uri) -> Result<()> {
+        let Some(preview) = self.previews.remove(&uri) else { return Ok(()) };
+        preview.running.stop();
+        if !preview.png.is_file() {
+            let _ = fs::remove_dir_all(&preview.out_dir);
+            let message = "LilyPond made no image; build the file to see its errors";
+            return self.reply(failed(preview.request, message.into()));
+        }
+        if let Some(old) = self.shown.insert(uri, preview.out_dir) {
+            let _ = fs::remove_dir_all(old);
+        }
+        let png = preview.png.to_string_lossy();
+        self.reply(Response::new_ok(preview.request, json!({ "png": png })))
+    }
+
+    fn send_finished(&self, uri: &Uri, outputs: Outputs, success: bool, started: Instant) -> Result<()> {
+        let text = |path: Option<PathBuf>| path.map(|path| path.to_string_lossy().into_owned());
+        let params = BuildFinished {
+            uri: uri.clone(),
+            pdf: text(outputs.pdf),
+            midi: text(outputs.midi),
+            success,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        };
+        self.connection.sender.send(Notification::new(build::FINISHED.into(), params).into())?;
+        Ok(())
     }
 
     fn time_out(&mut self, uri: &Uri) -> Result<()> {
@@ -590,21 +808,50 @@ impl<'c> Server<'c> {
         let seconds = run::check_timeout().as_secs_f64();
         let message = format!("LilyPond check took longer than {seconds} s and was stopped");
         if let Some(layers) = self.layers.get_mut(uri) {
-            layers.check = vec![notice(message)];
+            layers.set_check(vec![notice(message)]);
         }
-        self.set_included(uri, HashMap::new())?;
+        self.set_included(uri, RunKind::Check, HashMap::new())?;
         self.publish(uri)
     }
 
-    /// Replaces what `root`'s check said about the files it included, and publishes every file
-    /// whose diagnostics that changes.
-    fn set_included(&mut self, root: &Uri, files: HashMap<PathBuf, Vec<Diagnostic>>) -> Result<()> {
-        let old = self.included.remove(root).unwrap_or_default();
+    fn time_out_build(&mut self, uri: &Uri) -> Result<()> {
+        let Some(build) = self.builds.remove(uri) else { return Ok(()) };
+        let started = build.started;
+        build.stop();
+        let seconds = run::build_timeout().as_secs_f64();
+        let message = format!("LilyPond build took longer than {seconds} s and was stopped");
+        if let Some(layers) = self.layers.get_mut(uri) {
+            layers.set_build(vec![notice(message)]);
+        }
+        self.set_included(uri, RunKind::Build, HashMap::new())?;
+        self.publish(uri)?;
+        self.send_finished(uri, Outputs::default(), false, started)
+    }
+
+    fn time_out_preview(&mut self, uri: &Uri) -> Result<()> {
+        let Some(preview) = self.previews.remove(uri) else { return Ok(()) };
+        preview.running.stop();
+        let _ = fs::remove_dir_all(&preview.out_dir);
+        let seconds = run::build_timeout().as_secs_f64();
+        let message = format!("LilyPond preview took longer than {seconds} s and was stopped");
+        self.reply(failed(preview.request, message))
+    }
+
+    /// Replaces what one kind of run of `root` said about the files it included, and publishes
+    /// every file whose diagnostics that changes.
+    fn set_included(
+        &mut self,
+        root: &Uri,
+        kind: RunKind,
+        files: HashMap<PathBuf, Vec<Diagnostic>>,
+    ) -> Result<()> {
+        let key = (root.clone(), kind);
+        let old = self.included.remove(&key).unwrap_or_default();
         let mut touched: Vec<PathBuf> = old.into_keys().chain(files.keys().cloned()).collect();
         touched.sort();
         touched.dedup();
         if !files.is_empty() {
-            self.included.insert(root.clone(), files);
+            self.included.insert(key, files);
         }
         for path in touched {
             self.publish_path(&path)?;
@@ -612,8 +859,16 @@ impl<'c> Server<'c> {
         Ok(())
     }
 
+    /// What every run said about `path` from the files that include it, each message once, since
+    /// a check and a build of the same file report its parse errors alike.
     fn included_for(&self, path: &Path) -> Vec<Diagnostic> {
-        self.included.values().filter_map(|files| files.get(path)).flatten().cloned().collect()
+        let mut found: Vec<Diagnostic> = Vec::new();
+        for diagnostic in self.included.values().filter_map(|files| files.get(path)).flatten() {
+            if !found.contains(diagnostic) {
+                found.push(diagnostic.clone());
+            }
+        }
+        found
     }
 
     /// `range`, in UTF-8 positions in the file at `uri`, in the client's encoding. The open copy
@@ -710,10 +965,70 @@ impl Drop for Server<'_> {
         for (_, check) in self.checks.drain() {
             check.stop();
         }
+        for (_, build) in self.builds.drain() {
+            build.stop();
+        }
+        // Previews and the images they answered with are in the work folder, removed below.
+        for (_, preview) in self.previews.drain() {
+            preview.running.stop();
+        }
         // Before the work folder goes, so that no dump starts in it, or is left running in it.
         commanddata::stop_dump();
         run::remove_work_dir();
     }
+}
+
+/// Places a run's messages. Those about the file itself, at `path`, are in UTF-8 positions in
+/// `text`, which is what the run read. Those about files it included are by path, in the
+/// client's encoding, counted in each file as it is on disk, which is what LilyPond read.
+fn place(
+    stderr: &str,
+    path: &Path,
+    text: &str,
+    index: &LineIndex,
+    encoding: Encoding,
+) -> (Vec<Diagnostic>, HashMap<PathBuf, Vec<Diagnostic>>) {
+    let dir = path.parent().unwrap_or(Path::new("/"));
+    let mut own = Vec::new();
+    let mut others: HashMap<PathBuf, (String, LineIndex, Vec<Diagnostic>)> = HashMap::new();
+    for message in messages::parse_stderr(stderr) {
+        match &message.file {
+            Some(LyFile::Path(named)) if dir.join(named) != path => {
+                let (text, index, found) = others.entry(dir.join(named)).or_insert_with_key(|p| {
+                    let text = fs::read_to_string(p).unwrap_or_default();
+                    let index = LineIndex::new(&text);
+                    (text, index, Vec::new())
+                });
+                found.push(to_diagnostic(&message, text, index));
+            }
+            // `-` is the file itself, and so is a message that names no file.
+            _ => own.push(to_diagnostic(&message, text, index)),
+        }
+    }
+    let others = others
+        .into_iter()
+        .map(|(p, (text, index, found))| (p, diagnostics::convert(found, &text, &index, encoding)))
+        .collect();
+    (own, others)
+}
+
+/// The open file whose run has the id `id`, among `runs` keyed by file.
+fn owner<'a, T: 'a>(
+    runs: impl IntoIterator<Item = (&'a Uri, &'a T)>,
+    id: u64,
+    running: fn(&T) -> &Running,
+) -> Option<Uri> {
+    runs.into_iter().find(|(_, run)| running(run).id == id).map(|(uri, _)| uri.clone())
+}
+
+/// The open files whose runs have passed their deadlines.
+fn late<'a, T: 'a>(
+    runs: impl IntoIterator<Item = (&'a Uri, &'a T)>,
+    now: Instant,
+    running: fn(&T) -> &Running,
+) -> Vec<Uri> {
+    let late = runs.into_iter().filter(|(_, run)| running(run).deadline <= now);
+    late.map(|(uri, _)| uri.clone()).collect()
 }
 
 /// Records an open file in the index, and returns whether what it defines or includes changed. A
@@ -738,8 +1053,13 @@ fn notice(message: String) -> Diagnostic {
     }
 }
 
-fn invalid(id: lsp_server::RequestId, message: &str) -> Response {
+fn invalid(id: RequestId, message: &str) -> Response {
     Response::new_err(id, ErrorCode::InvalidParams as i32, message.into())
+}
+
+/// The reply to a command that was valid but could not be carried out.
+fn failed(id: RequestId, message: String) -> Response {
+    Response::new_err(id, ErrorCode::RequestFailed as i32, message)
 }
 
 /// The file's text and every node of its tree, for the tests to compare with a fresh parse.

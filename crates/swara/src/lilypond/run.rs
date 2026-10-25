@@ -40,13 +40,10 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 /// This server's work folder, once it has made one.
 static WORK_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RunKind {
     Check,
-    // The save build and the preview construct these, in a later task.
-    #[allow(dead_code)]
     Build,
-    #[allow(dead_code)]
     Preview,
 }
 
@@ -74,10 +71,6 @@ pub struct Running {
 pub struct RunResult {
     pub id: u64,
     pub stderr: String,
-    /// Filled in by the receiver once it has reaped the run.
-    // The save build reports it, in a later task.
-    #[allow(dead_code)]
-    pub status: Option<ExitStatus>,
 }
 
 impl Running {
@@ -116,7 +109,7 @@ pub fn check_spec(
     include_paths: &[PathBuf],
 ) -> io::Result<RunSpec> {
     let dir = work_dir()?;
-    let out_dir = dir.join(format!("run-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+    let out_dir = dir.join(format!("run-{}", next_number()));
     let mut settings = OsString::from("-dinclude-settings=");
     settings.push(dir.join(SETTINGS_NAME));
     let mut args: Vec<OsString> =
@@ -145,16 +138,14 @@ pub fn spawn(spec: RunSpec, results: Sender<RunResult>) -> io::Result<Running> {
     fs::create_dir_all(&spec.out_dir)?;
     let (program, args) = spec.args.split_first().expect("a run names its program");
     let mut command = Command::new(program);
-    command
-        .args(args)
-        .env("LC_ALL", "C")
+    english(command.args(args))
         .stdin(if spec.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
     let mut child = command.spawn()?;
-    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    let id = next_number();
     let stdin = child.stdin.take();
     let stderr = child.stderr.take();
     let text = spec.stdin;
@@ -176,20 +167,41 @@ pub fn spawn(spec: RunSpec, results: Sender<RunResult>) -> io::Result<Running> {
         });
         let stderr = String::from_utf8_lossy(&printed).into_owned();
         // The server may have shut down, and with it the receiver.
-        let _ = results.send(RunResult { id, stderr, status: None });
+        let _ = results.send(RunResult { id, stderr });
     });
     let timeout = match spec.kind {
         RunKind::Check => check_timeout(),
-        RunKind::Build | RunKind::Preview => BUILD_TIMEOUT,
+        RunKind::Build | RunKind::Preview => build_timeout(),
     };
     Ok(Running { id, child, deadline: Instant::now() + timeout })
 }
 
+/// The next number from the one sequence that tells runs and their folders apart.
+pub(crate) fn next_number() -> u64 {
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Makes a LilyPond run report in English, which the message parser keys on. `C.UTF-8` rather
+/// than `C`, because under `C` LilyPond cannot open a file whose name is not ASCII. `LANGUAGE`
+/// is removed because GNU gettext reads it before `LC_ALL` to pick the language of messages.
+pub(crate) fn english(command: &mut Command) -> &mut Command {
+    command.env("LC_ALL", "C.UTF-8").env_remove("LANGUAGE")
+}
+
 /// `CHECK_TIMEOUT`, or under `SWARA_TEST=1` the milliseconds in `SWARA_TEST_CHECK_TIMEOUT_MS`.
 pub fn check_timeout() -> Duration {
+    test_millis("SWARA_TEST_CHECK_TIMEOUT_MS").map_or(CHECK_TIMEOUT, Duration::from_millis)
+}
+
+/// `BUILD_TIMEOUT`, or under `SWARA_TEST=1` the milliseconds in `SWARA_TEST_BUILD_TIMEOUT_MS`.
+pub fn build_timeout() -> Duration {
+    test_millis("SWARA_TEST_BUILD_TIMEOUT_MS").map_or(BUILD_TIMEOUT, Duration::from_millis)
+}
+
+/// The milliseconds in the variable `name`, read only under `SWARA_TEST=1`.
+fn test_millis(name: &str) -> Option<u64> {
     let testing = std::env::var_os("SWARA_TEST").is_some_and(|v| v == "1");
-    let millis = std::env::var("SWARA_TEST_CHECK_TIMEOUT_MS").ok().filter(|_| testing);
-    millis.and_then(|m| m.parse().ok()).map_or(CHECK_TIMEOUT, Duration::from_millis)
+    std::env::var(name).ok().filter(|_| testing).and_then(|m| m.parse().ok())
 }
 
 /// Removes this server's folder in the system's temporary folder, with everything in it.
@@ -279,6 +291,15 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn runs_read_utf8_paths_and_report_in_english() {
+        let mut command = Command::new("lilypond");
+        english(&mut command);
+        let envs: Vec<_> = command.get_envs().collect();
+        assert!(envs.contains(&("LC_ALL".as_ref(), Some("C.UTF-8".as_ref()))), "{envs:?}");
+        assert!(envs.contains(&("LANGUAGE".as_ref(), None)), "{envs:?}");
     }
 
     #[test]

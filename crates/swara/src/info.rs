@@ -1,6 +1,7 @@
 //! `swara info`: what the plugin and `:checkhealth swara` need to know about this installation.
 
 use crate::commanddata::cache;
+use crate::lilypond::run::english;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,7 +72,7 @@ pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
 }
 
 fn version_of(lilypond: &Path) -> Option<String> {
-    let out = Command::new(lilypond).arg("--version").env("LC_ALL", "C").output().ok()?;
+    let out = english(&mut Command::new(lilypond)).arg("--version").output().ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     parse_version(stdout.lines().next()?)
 }

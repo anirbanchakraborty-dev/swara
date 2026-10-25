@@ -428,11 +428,10 @@ fn start_dump(
     let stderr =
         create_private(log).map_err(|error| failed("the dump log could not be made", error))?;
     let mut command = Command::new(lilypond);
-    command
+    run::english(&mut command)
         .args(["-l", "ERROR"])
         .arg(script)
         .current_dir(dir)
-        .env("LC_ALL", "C")
         .env("SWARA_DUMP_OUT", out)
         .stdin(Stdio::null())
         .stdout(Stdio::null())

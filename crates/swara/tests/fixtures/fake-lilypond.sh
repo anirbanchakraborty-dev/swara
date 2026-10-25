@@ -8,6 +8,8 @@
 #   sleep:N      start a grandchild that sleeps 30 s, append its pid to $SWARA_FAKE_LOG.children,
 #                then sleep N seconds
 #   stderr:FILE  print FILE to standard error, and exit 1 once the steps are done
+#   stdin        copy standard input to $SWARA_FAKE_LOG.stdin
+#   write:EXT    write one line to the -o name with .EXT added, as LilyPond writes its output
 if [ "$1" = --version ]; then
   [ -n "$SWARA_FAKE_VERSION" ] && echo "GNU LilyPond $SWARA_FAKE_VERSION"
   exit 0
@@ -17,6 +19,12 @@ if [ -n "$SWARA_DUMP_OUT" ]; then
 else
   echo "$$ $*" >> "$SWARA_FAKE_LOG"
 fi
+out=
+prev=
+for arg; do
+  [ "$prev" = -o ] && out=$arg
+  prev=$arg
+done
 status=0
 set -f
 IFS=,
@@ -30,6 +38,12 @@ for step in $SWARA_FAKE_MODE; do
     stderr:*)
       cat "${step#stderr:}" >&2
       status=1
+      ;;
+    stdin)
+      cat > "$SWARA_FAKE_LOG.stdin"
+      ;;
+    write:*)
+      echo "fake ${step#write:}" > "$out.${step#write:}"
       ;;
   esac
 done

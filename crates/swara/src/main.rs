@@ -1,4 +1,5 @@
 mod arity;
+mod build;
 mod commanddata;
 mod completion;
 mod definition;
