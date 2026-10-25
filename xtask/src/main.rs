@@ -1,5 +1,6 @@
 mod compare;
 mod corpus;
+mod dist;
 mod dyn_grammar;
 mod gen_song;
 mod sha256;
@@ -12,6 +13,7 @@ const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
        cargo xtask corpus fetch
        cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]
        cargo xtask broken verify
+       cargo xtask dist --target <triple> --out <dir>
        cargo xtask compare --name <n> [--commit <sha>] --lib <dylib> --symbol <sym>
                    [--inject-lib <dylib> --inject-symbol <sym> --inject-query <scm>] --out <json>";
 
@@ -32,6 +34,9 @@ fn main() -> ExitCode {
         ["corpus", "fetch"] => report(corpus::fetch(&root())),
         ["corpus", "filter", options @ ..] => corpus_filter(options),
         ["broken", "verify"] => report(corpus::broken_verify(&root())),
+        ["dist", "--target", triple, "--out", out] => {
+            report(dist::run(&root(), triple, Path::new(out)))
+        }
         ["compare", options @ ..] => compare(options),
         _ => {
             eprintln!("{USAGE}");

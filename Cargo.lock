@@ -346,6 +346,7 @@ name = "xtask"
 version = "0.0.0"
 dependencies = [
  "libloading",
+ "serde_json",
  "tree-sitter",
  "tree-sitter-language",
 ]
