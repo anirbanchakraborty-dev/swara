@@ -45,16 +45,62 @@ local function report_program(bin)
   end
 end
 
+-- This plugin's folder, three levels above this file, `lua/swara/health.lua`.
+local ROOT = vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, 'S').source:sub(2))))
+
+--- Each of Swara's queries that Neovim does not read from Swara's own file, or that does not load,
+--- as { message, advice }. Neovim reads only the first file for a query on the runtime path that
+--- does not say `;extends`, so another plugin's LilyPond queries earlier on it hide Swara's.
+local function query_problems()
+  local folder = vim.fs.joinpath(ROOT, 'queries', 'lilypond')
+  local names = {}
+  for name in vim.fs.dir(folder) do
+    table.insert(names, name:match('^(.*)%.scm$'))
+  end
+  table.sort(names)
+  local problems = {}
+  for _, query in ipairs(names) do
+    local own = vim.uv.fs_realpath(vim.fs.joinpath(folder, query .. '.scm'))
+    local files = vim.treesitter.query.get_files('lilypond', query)
+    local read = vim.iter(files):any(function(file)
+      return vim.uv.fs_realpath(file) == own
+    end)
+    local ok, err = pcall(vim.treesitter.query.get, 'lilypond', query)
+    if not read then
+      local first = vim.iter(files):find(function(file)
+        return file:find('queries/lilypond/' .. query .. '.scm', 1, true) ~= nil
+      end)
+      table.insert(problems, {
+        ('the %s queries come from %s rather than from Swara'):format(query, tostring(first)),
+        'Remove the plugin that holds that file, or its queries/lilypond folder, then restart Neovim.',
+      })
+    elseif not ok then
+      table.insert(problems, {
+        ('the %s queries do not load (%s)'):format(query, tostring(err):match('[^\n]*')),
+        "Another plugin's queries/lilypond file that says `;extends` does not fit Swara's grammar. Remove it, then restart Neovim.",
+      })
+    end
+  end
+  return problems
+end
+
 local function report_grammar(info)
+  local rev = tostring(info.grammar_rev)
   local ok, why = require('swara.treesitter').check(info)
-  if ok then
-    health.ok(('LilyPond grammar from commit %s'):format(tostring(info.grammar_rev)))
+  if not ok then
+    health.error(('LilyPond grammar from commit %s: %s'):format(rev, why), {
+      "Swara's colours, folds and indent need its own grammar under the name `lilypond`.",
+      'Remove the other LilyPond parser from the runtime path, then restart Neovim.',
+    })
     return
   end
-  health.error(('LilyPond grammar from commit %s: %s'):format(tostring(info.grammar_rev), why), {
-    "Swara's colours, folds and indent need its own grammar under the name `lilypond`.",
-    'Remove the other LilyPond parser from the runtime path, then restart Neovim.',
-  })
+  local problems = query_problems()
+  if #problems == 0 then
+    health.ok(('LilyPond grammar from commit %s'):format(rev))
+  end
+  for _, problem in ipairs(problems) do
+    health.error(('LilyPond grammar from commit %s, but %s'):format(rev, problem[1]), { problem[2] })
+  end
 end
 
 local function report_lilypond(info)

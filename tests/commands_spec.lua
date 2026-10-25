@@ -158,6 +158,25 @@ function M.health_reports_conflict()
   end
 end
 
+function M.health_names_other_queries()
+  -- The grammar is Swara's own here, but another plugin's highlights come first on the runtime
+  -- path, which is what stops the colours, so the report names that file.
+  local dir = h.tmpdir()
+  local other = h.write(dir .. '/queries/lilypond/highlights.scm', '(no_such_node) @variable\n')
+  local out = h.child_json(HEALTH_PRELUDE .. ([[
+    vim.opt.runtimepath:prepend(%q)
+    require('swara.health').check()
+    print(vim.json.encode(report))
+  ]]):format(dir))
+  local named = vim.tbl_filter(function(line)
+    return line.kind == 'error' and line.message:find(other, 1, true) ~= nil
+  end, out)
+  assert(#named == 1, vim.inspect(out))
+  for _, line in ipairs(out) do
+    assert(not (line.kind == 'ok' and line.message:find('grammar', 1, true)), 'grammar reported OK: ' .. line.message)
+  end
+end
+
 function M.health_is_found_by_checkhealth()
   -- `:checkhealth` prints its progress after anything the child prints, so the report is looked
   -- for in the whole output rather than decoded from the last line.
