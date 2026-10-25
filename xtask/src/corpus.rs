@@ -1121,4 +1121,57 @@ mod tests {
         assert!(problem(2).contains("is in /elsewhere/init.ly"));
         assert!(problem(4).starts_with("expected line 5, LilyPond's first error is on line 6"));
     }
+
+    /// Runs the check command on `source`, the way the language server will, and returns stderr.
+    fn check_stderr(name: &str, source: &str) -> String {
+        use std::io::Write;
+        let dir = scratch(name);
+        let settings = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("assets/lilypond/check-settings.ly");
+        let mut arg = std::ffi::OsString::from("-dinclude-settings=");
+        arg.push(&settings);
+        let mut child = Command::new("lilypond")
+            .env("LC_ALL", "C")
+            .args(["-l", "WARNING"])
+            .arg(arg)
+            .arg("-o")
+            .arg(dir.join("out"))
+            .arg("-")
+            .current_dir(&dir)
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(source.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        let _ = fs::remove_dir_all(&dir);
+        String::from_utf8_lossy(&out.stderr).into_owned()
+    }
+
+    /// A score whose only output is MIDI is interpreted under its `\midi` definition, which is where
+    /// a staff defined there alone exists. LilyPond's own build prints nothing for the first file
+    /// and warns about the undefined context in the second. Needs LilyPond 2.26.0; without it the
+    /// test says so and passes.
+    #[test]
+    fn check_reads_a_midi_only_score_under_its_midi_definition() {
+        if let Err(why) = require_lilypond() {
+            eprintln!("skipped: {why}");
+            return;
+        }
+        let defined = "\\version \"2.26.0\"\n\\score {\n  \\new MyStaff { c'4 d' }\n  \\midi {\n    \\context { \\Staff \\name MyStaff \\alias Staff }\n    \\context { \\Score \\accepts MyStaff }\n  }\n}\n";
+        assert_eq!(check_stderr("midi-defined", defined), "");
+        let undefined = "\\version \"2.26.0\"\n\\score {\n  \\new NoSuchStaff { c'4 d' }\n  \\midi { }\n}\n";
+        assert!(
+            check_stderr("midi-undefined", undefined).contains("cannot create context: NoSuchStaff"),
+            "an undefined context must still be reported"
+        );
+    }
 }
