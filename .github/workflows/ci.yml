@@ -81,9 +81,13 @@ jobs:
         run: cargo test --locked --workspace
 
       # The ignored tests measure speed against the real LilyPond, so they run on one platform only.
+      # The two tests that hold playback's waits to a millisecond are skipped here. GitHub's macOS
+      # runners are virtual machines, and in the first run on one those waits ended 2 to 41 ms late,
+      # against under 1 ms on a real Mac, so the tests would time the virtual machine rather than
+      # the code. They still run on the Linux runner above and in every local run on a Mac.
       - name: Tests, with the ignored ones
         if: runner.os == 'macOS'
-        run: cargo test --locked --workspace -- --include-ignored
+        run: cargo test --locked --workspace -- --include-ignored --skip waits_end_within_a_millisecond
 
   plugin:
     strategy:
