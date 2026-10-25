@@ -1,9 +1,11 @@
 //! Diagnostics in three layers per file: `instant` from the tree on every edit, `check` from the
 //! LilyPond run after a pause, and `build` from the save build. Every publish sends their union.
 
+pub mod includes;
+pub mod names;
 pub mod syntax;
 
-use lsp_types::{Diagnostic, Position};
+use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 use tree_sitter::InputEdit;
 
 use crate::document::Document;
@@ -30,6 +32,18 @@ impl Layers {
             diagnostic.range.start = shift_position(diagnostic.range.start, edit);
             diagnostic.range.end = shift_position(diagnostic.range.end, edit);
         }
+    }
+}
+
+/// An error over the bytes `start..end` of `doc`, with positions in `enc`.
+pub(crate) fn error(doc: &Document, enc: Encoding, start: usize, end: usize, message: String) -> Diagnostic {
+    let position = |byte| doc.index.byte_to_position(&doc.text, byte, enc);
+    Diagnostic {
+        range: Range::new(position(start), position(end)),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("swara".into()),
+        message,
+        ..Default::default()
     }
 }
 

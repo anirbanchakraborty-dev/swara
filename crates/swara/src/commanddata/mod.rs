@@ -42,8 +42,6 @@ enum DumpState {
 }
 
 /// What an argument takes, which decides what in the source binds to it.
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArgKind {
     Pitch,
@@ -58,8 +56,6 @@ pub enum ArgKind {
 
 /// The kind of argument one of LilyPond's type predicates accepts. A predicate that accepts more
 /// than one kind, such as `symbol-list-or-music?`, is `Scheme`.
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 pub fn arg_kind(pred: &str) -> ArgKind {
     match pred {
         "ly:pitch?" => ArgKind::Pitch,
@@ -94,17 +90,13 @@ pub enum Scope {
     Context,
 }
 
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct Arg {
     /// The predicate's name, such as `ly:pitch?`, or empty when it has none.
     pub pred: String,
     pub optional: bool,
 }
 
-// The checks, completion and hover read this, in later tasks.
-#[allow(dead_code)]
 impl Arg {
     pub fn kind(&self) -> ArgKind {
         arg_kind(&self.pred)

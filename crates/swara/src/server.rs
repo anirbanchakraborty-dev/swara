@@ -34,9 +34,10 @@ use serde_json::{Value, json};
 use tree_sitter::{Node, Parser};
 
 use crate::commanddata::{self, CommandData};
-use crate::diagnostics::{self, Layers, syntax};
+use crate::diagnostics::{self, Layers, includes, names, syntax};
 use crate::document::Document;
 use crate::file_uri;
+use crate::index::Index;
 use crate::info;
 use crate::line_index::{Encoding, LineIndex};
 use crate::lilypond::messages::{self, LyFile};
@@ -179,6 +180,8 @@ struct Server<'c> {
     found_lilypond: Option<Option<PathBuf>>,
     /// What the installed LilyPond defines, once it has loaded.
     data: Option<CommandData>,
+    /// What the open files and the files they include define, for the name checks.
+    index: Index,
     /// The command data from its loading thread, until it arrives.
     data_results: Receiver<std::result::Result<CommandData, String>>,
     /// `SWARA_TEST=1` turns on requests that only the tests use.
@@ -192,6 +195,7 @@ impl<'c> Server<'c> {
             .set_language(&tree_sitter_lilypond::LANGUAGE.into())
             .expect("the grammar's ABI matches the tree-sitter crate");
         let (results_sender, results) = crossbeam_channel::unbounded();
+        let index = Index::new(config.include_paths.clone());
         Self {
             connection,
             encoding,
@@ -206,6 +210,7 @@ impl<'c> Server<'c> {
             included: HashMap::new(),
             found_lilypond: None,
             data: None,
+            index,
             data_results: never(),
             test_mode: std::env::var_os("SWARA_TEST").is_some_and(|v| v == "1"),
         }
@@ -245,7 +250,12 @@ impl<'c> Server<'c> {
                     // There is one answer at most, or none when the thread went away.
                     self.data_results = never();
                     match loaded {
-                        Ok(Ok(data)) => self.data = Some(data),
+                        Ok(Ok(data)) => {
+                            self.index.set_datadir(data.datadir.clone());
+                            self.data = Some(data);
+                            // Every name was unknown until now, so the checks run again.
+                            self.refresh_open(None)?;
+                        }
                         Ok(Err(error)) => {
                             let message =
                                 format!("LilyPond's command data could not be read: {error}");
@@ -338,9 +348,13 @@ impl<'c> Server<'c> {
                 let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
                 let item = params.text_document;
                 let doc = Document::new(item.uri.clone(), item.version, item.text, &mut self.parser);
+                let changed = index_update(&mut self.index, &doc);
                 self.documents.insert(item.uri.clone(), doc);
                 self.layers.insert(item.uri.clone(), Layers::default());
                 self.refresh(&item.uri)?;
+                if changed {
+                    self.refresh_open(Some(&item.uri))?;
+                }
             }
             DidChangeTextDocument::METHOD => {
                 let params: DidChangeTextDocumentParams =
@@ -359,7 +373,13 @@ impl<'c> Server<'c> {
                         }
                     }
                 }
+                let changed = index_update(&mut self.index, doc);
                 self.refresh(&uri)?;
+                if changed {
+                    // A name this file defines or a file it includes may be what another open
+                    // file was missing.
+                    self.refresh_open(Some(&uri))?;
+                }
                 if self.config.auto_check && checkable(&uri) {
                     // A check of the old text would only report what is no longer there.
                     if let Some(check) = self.checks.remove(&uri) {
@@ -377,6 +397,11 @@ impl<'c> Server<'c> {
                 }
                 self.documents.remove(&uri);
                 self.layers.remove(&uri);
+                if let Some(path) = file_uri::to_path(&uri) {
+                    // The file is read from disk again, which may not define what the editor did.
+                    self.index.close(&path);
+                    self.refresh_open(None)?;
+                }
                 self.set_included(&uri, HashMap::new())?;
                 match file_uri::to_path(&uri) {
                     // Another open file's check may still have something to say about this one.
@@ -518,8 +543,20 @@ impl<'c> Server<'c> {
         let (Some(doc), Some(layers)) = (self.documents.get(uri), self.layers.get_mut(uri)) else {
             return Ok(());
         };
-        layers.instant = syntax::syntax_errors(doc, Encoding::Utf8);
+        let mut instant = syntax::syntax_errors(doc, Encoding::Utf8);
+        instant.extend(names::name_checks(doc, self.data.as_ref(), &self.index, Encoding::Utf8));
+        instant.extend(includes::include_checks(doc, self.data.as_ref(), &self.index, Encoding::Utf8));
+        layers.instant = instant;
         self.publish(uri)
+    }
+
+    /// Refreshes every open file but `except`.
+    fn refresh_open(&mut self, except: Option<&Uri>) -> Result<()> {
+        let uris: Vec<Uri> = self.documents.keys().filter(|u| Some(*u) != except).cloned().collect();
+        for uri in &uris {
+            self.refresh(uri)?;
+        }
+        Ok(())
     }
 
     /// Publishes every diagnostic of an open file: its layers, and what checks of other files
@@ -580,6 +617,12 @@ impl Drop for Server<'_> {
 
 /// Only a `.ly` file on disk is checked. An `.ily` file is checked through the files that
 /// include it.
+/// Records an open file in the index, and returns whether what it defines or includes changed. A
+/// file with no path cannot be included, so it is not recorded.
+fn index_update(index: &mut Index, doc: &Document) -> bool {
+    file_uri::to_path(&doc.uri).is_some_and(|path| index.update(&path, doc))
+}
+
 fn checkable(uri: &Uri) -> bool {
     file_uri::to_path(uri).is_some_and(|path| path.extension().is_some_and(|ext| ext == "ly"))
 }

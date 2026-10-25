@@ -13,6 +13,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use client::{TestClient, uri};
+use lsp_types::{Diagnostic, Position, Range};
 use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(5);
@@ -178,4 +179,33 @@ fn shutdown_stops_a_running_dump() {
         assert!(Instant::now() < deadline, "left running after shutdown: {started:?}");
         sleep(Duration::from_millis(20));
     }
+}
+
+fn has(diagnostics: &[Diagnostic], message: &str) -> bool {
+    diagnostics.iter().any(|d| d.message == message)
+}
+
+#[test]
+fn names_checked_once_data_loads() {
+    let dir = scratch("names-load");
+    let mut client = start_fake(&dir, "2.26.0", Some(MINI));
+    // Opened while the dump runs, so the check waits for the data and then runs.
+    let file = uri("/music/lesson.ly");
+    client.open(&file, "{ \\melodyy }\n");
+    client.wait_diagnostics(&file, WAIT, |d| has(d, "unknown command `\\melodyy`"));
+}
+
+#[test]
+fn names_follow_an_open_include() {
+    let dir = scratch("names-include");
+    let mut client = start_fake(&dir, "2.26.0", Some(MINI));
+    wait_for_data(&mut client);
+    let defs = uri("/music/defs.ily");
+    let main = uri("/music/main.ly");
+    client.open(&defs, "% nothing yet\n");
+    client.open(&main, "\\include \"defs.ily\"\n{ \\tune }\n");
+    client.wait_diagnostics(&main, WAIT, |d| has(d, "unknown command `\\tune`"));
+    let end = Position::new(1, 0);
+    client.change(&defs, 2, Range::new(end, end), "tune = { c }\n");
+    client.wait_diagnostics(&main, WAIT, <[Diagnostic]>::is_empty);
 }

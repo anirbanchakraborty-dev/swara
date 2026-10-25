@@ -1,11 +1,16 @@
+mod arity;
 mod commanddata;
 mod diagnostics;
 mod document;
 mod file_uri;
+mod index;
 mod info;
 mod lilypond;
 mod line_index;
+mod node_text;
 mod server;
+#[cfg(test)]
+mod testing;
 
 use std::process::ExitCode;
 

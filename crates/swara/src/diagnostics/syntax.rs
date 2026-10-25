@@ -1,8 +1,9 @@
 //! Syntax errors from the tree: Tree-sitter's `ERROR` and `MISSING` nodes, in words.
 
-use lsp_types::{Diagnostic, DiagnosticSeverity, Range};
+use lsp_types::Diagnostic;
 use tree_sitter::Node;
 
+use super::error;
 use crate::document::Document;
 use crate::line_index::Encoding;
 
@@ -17,7 +18,7 @@ pub fn syntax_errors(doc: &Document, enc: Encoding) -> Vec<Diagnostic> {
     while let Some(node) = stack.pop() {
         if node.is_missing() {
             let message = format!("missing `{}`", node.kind());
-            found.push(diagnostic(doc, enc, node.start_byte(), node.start_byte(), message));
+            found.push(error(doc, enc, node.start_byte(), node.start_byte(), message));
         } else if node.is_error() {
             let token = first_token(node);
             // A tree out of step with the text must cost a message, not the server.
@@ -30,7 +31,7 @@ pub fn syntax_errors(doc: &Document, enc: Encoding) -> Vec<Diagnostic> {
             let quoted: String = text.chars().take(QUOTED).collect();
             let start = token.start_byte();
             let message = format!("unexpected `{quoted}`");
-            found.push(diagnostic(doc, enc, start, start + text.len(), message));
+            found.push(error(doc, enc, start, start + text.len(), message));
         } else {
             let mut cursor = node.walk();
             let children: Vec<Node> = node.children(&mut cursor).filter(Node::has_error).collect();
@@ -45,15 +46,4 @@ fn first_token(mut node: Node) -> Node {
         node = child;
     }
     node
-}
-
-fn diagnostic(doc: &Document, enc: Encoding, start: usize, end: usize, message: String) -> Diagnostic {
-    let position = |byte| doc.index.byte_to_position(&doc.text, byte, enc);
-    Diagnostic {
-        range: Range::new(position(start), position(end)),
-        severity: Some(DiagnosticSeverity::ERROR),
-        source: Some("swara".into()),
-        message,
-        ..Default::default()
-    }
 }
