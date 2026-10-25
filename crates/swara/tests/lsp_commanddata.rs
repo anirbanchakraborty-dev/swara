@@ -22,14 +22,22 @@ use serde_json::{Value, json};
 
 const WAIT: Duration = Duration::from_secs(5);
 const SETTLE: Duration = Duration::from_millis(500);
-const FAKE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/fake-lilypond.sh");
-const MINI: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/commanddata/mini.jsonl");
+const FAKE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/fake-lilypond.sh"
+);
+const MINI: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/commanddata/mini.jsonl"
+);
 const NOT_FOUND: &str =
     "LilyPond not found: the LilyPond check, builds, preview and playback are off";
 
 /// A fresh, empty folder for one test.
 fn scratch(name: &str) -> PathBuf {
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("lsp_commanddata").join(name);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join("lsp_commanddata")
+        .join(name);
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     dir
@@ -37,7 +45,10 @@ fn scratch(name: &str) -> PathBuf {
 
 fn shown(client: &mut TestClient) -> Vec<String> {
     let shown = client.notifications("window/showMessage", SETTLE);
-    shown.iter().map(|params| params["message"].as_str().unwrap().to_owned()).collect()
+    shown
+        .iter()
+        .map(|params| params["message"].as_str().unwrap().to_owned())
+        .collect()
 }
 
 /// The server's summary of its command data, once it has loaded.
@@ -49,7 +60,10 @@ fn wait_for_data(client: &mut TestClient) -> Value {
         if !summary.is_null() {
             return summary;
         }
-        assert!(Instant::now() < deadline, "command data did not load within {WAIT:?}");
+        assert!(
+            Instant::now() < deadline,
+            "command data did not load within {WAIT:?}"
+        );
         sleep(Duration::from_millis(20));
     }
 }
@@ -145,9 +159,15 @@ fn failed_dump_is_logged_and_data_stays_absent() {
     let logged = client.notifications("window/logMessage", SETTLE);
     assert_eq!(logged.len(), 1, "{logged:?}");
     let message = logged[0]["message"].as_str().unwrap();
-    assert!(message.starts_with("LilyPond's command data could not be read: "), "{message}");
+    assert!(
+        message.starts_with("LilyPond's command data could not be read: "),
+        "{message}"
+    );
     let reply = client.request_raw("swara/debugCommandData", json!({}));
-    assert_eq!(reply.response_result.expect("debugCommandData answers"), Value::Null);
+    assert_eq!(
+        reply.response_result.expect("debugCommandData answers"),
+        Value::Null
+    );
     assert_eq!((dumps(&dir), cache_files(&dir)), (1, 0));
     assert!(shown(&mut client).is_empty());
 }
@@ -160,7 +180,9 @@ fn alive(pid: i32) -> bool {
 /// The pids in a fake's log, the first word of each line.
 fn pids(log: &Path) -> Vec<i32> {
     let text = fs::read_to_string(log).unwrap_or_default();
-    text.lines().filter_map(|line| line.split_whitespace().next()?.parse().ok()).collect()
+    text.lines()
+        .filter_map(|line| line.split_whitespace().next()?.parse().ok())
+        .collect()
 }
 
 #[test]
@@ -171,7 +193,10 @@ fn shutdown_stops_a_running_dump() {
     let children = dir.join("fake.log.children");
     let deadline = Instant::now() + WAIT;
     while pids(&children).is_empty() {
-        assert!(Instant::now() < deadline, "the dump did not start within {WAIT:?}");
+        assert!(
+            Instant::now() < deadline,
+            "the dump did not start within {WAIT:?}"
+        );
         sleep(Duration::from_millis(20));
     }
     let mut started = pids(&dir.join("fake.log.dumps"));
@@ -180,7 +205,10 @@ fn shutdown_stops_a_running_dump() {
     drop(client);
     let deadline = Instant::now() + WAIT;
     while started.iter().any(|&pid| alive(pid)) {
-        assert!(Instant::now() < deadline, "left running after shutdown: {started:?}");
+        assert!(
+            Instant::now() < deadline,
+            "left running after shutdown: {started:?}"
+        );
         sleep(Duration::from_millis(20));
     }
 }
@@ -242,5 +270,11 @@ fn completion_and_hover_answer() {
     let Some(HoverContents::Markup(markup)) = shown.map(|h| h.contents) else {
         panic!("no hover");
     };
-    assert!(markup.value.contains("Notes in the music take their octave"), "{}", markup.value);
+    assert!(
+        markup
+            .value
+            .contains("Notes in the music take their octave"),
+        "{}",
+        markup.value
+    );
 }

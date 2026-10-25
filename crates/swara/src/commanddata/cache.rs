@@ -24,13 +24,19 @@ pub fn store(path: &Path, text: &str) -> io::Result<()> {
     let mut partial = path.as_os_str().to_owned();
     partial.push(format!(".partial-{}", std::process::id()));
     let partial = PathBuf::from(partial);
-    fs::write(&partial, text).and_then(|()| fs::rename(&partial, path)).inspect_err(|_| {
-        let _ = fs::remove_file(&partial);
-    })
+    fs::write(&partial, text)
+        .and_then(|()| fs::rename(&partial, path))
+        .inspect_err(|_| {
+            let _ = fs::remove_file(&partial);
+        })
 }
 
 fn cache_dir() -> PathBuf {
-    let var = |name| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute());
+    let var = |name| {
+        std::env::var_os(name)
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+    };
     // The tests keep their caches apart from the user's own.
     let testing = std::env::var_os("SWARA_TEST").is_some_and(|v| v == "1");
     if let Some(dir) = var("SWARA_TEST_CACHE_DIR").filter(|_| testing) {
@@ -72,8 +78,15 @@ mod tests {
         assert_ne!(old, new);
         assert_eq!(new, path(lilypond, "2.26.0"));
         let name = new.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with("commands-") && name.ends_with(".jsonl"), "{name}");
-        assert_eq!(name.len(), "commands-".len() + 16 + ".jsonl".len(), "{name}");
+        assert!(
+            name.starts_with("commands-") && name.ends_with(".jsonl"),
+            "{name}"
+        );
+        assert_eq!(
+            name.len(),
+            "commands-".len() + 16 + ".jsonl".len(),
+            "{name}"
+        );
         assert_eq!(new.parent().unwrap().file_name().unwrap(), "swara");
     }
 

@@ -395,8 +395,7 @@ fn set_language(state: &mut State, name: String) {
 pub(crate) fn holds(node: Node, pos: usize, text: &str) -> bool {
     node.start_byte() < pos
         && (pos < node.end_byte()
-            || (pos == node.end_byte()
-                && !text[..pos].ends_with(['}', '>', ')', ']', '"'])))
+            || (pos == node.end_byte() && !text[..pos].ends_with(['}', '>', ')', ']', '"'])))
 }
 
 /// The state inside a node that keeps its own, or `None` for one that shares its parent's.

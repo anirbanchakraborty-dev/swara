@@ -61,11 +61,24 @@ pub fn arg_kind(pred: &str) -> ArgKind {
         "ly:pitch?" => ArgKind::Pitch,
         "ly:duration?" => ArgKind::Duration,
         "ly:music?" | "ly:event?" => ArgKind::Music,
-        "string?" | "symbol?" | "symbol-list?" | "symbol-list-or-symbol?" | "key?" | "key-list?"
+        "string?"
+        | "symbol?"
+        | "symbol-list?"
+        | "symbol-list-or-symbol?"
+        | "key?"
+        | "key-list?"
         | "key-list-or-symbol?" => ArgKind::Word,
         "markup?" | "cheap-markup?" | "markup-list?" => ArgKind::Markup,
-        "number?" | "integer?" | "real?" | "rational?" | "index?" | "positive-number?"
-        | "non-negative-number?" | "exact-rational?" | "fraction?" | "ly:dir?" => ArgKind::Number,
+        "number?"
+        | "integer?"
+        | "real?"
+        | "rational?"
+        | "index?"
+        | "positive-number?"
+        | "non-negative-number?"
+        | "exact-rational?"
+        | "fraction?"
+        | "ly:dir?" => ArgKind::Number,
         _ => ArgKind::Scheme,
     }
 }
@@ -146,20 +159,36 @@ pub struct Described {
 #[derive(Deserialize)]
 #[serde(tag = "k", rename_all = "kebab-case")]
 enum Record {
-    Meta { format: u32, lilypond: String, datadir: Option<PathBuf> },
+    Meta {
+        format: u32,
+        lilypond: String,
+        datadir: Option<PathBuf>,
+    },
     MusicFunction(Function),
     Markup(Function),
     MarkupList(Function),
-    Identifier { name: String, kind: IdentifierKind },
+    Identifier {
+        name: String,
+        kind: IdentifierKind,
+    },
     Grob(Grob),
     Interface(Interface),
     Property(Property),
     Context(Described),
     Translator(Described),
-    MusicType { name: String },
-    EventClass { name: String },
-    Language { name: String, pitches: HashSet<String> },
-    Drums { names: HashSet<String> },
+    MusicType {
+        name: String,
+    },
+    EventClass {
+        name: String,
+    },
+    Language {
+        name: String,
+        pitches: HashSet<String>,
+    },
+    Drums {
+        names: HashSet<String>,
+    },
     /// The last line, which says the dump finished.
     End,
     /// A record from a newer dump, which this version skips.
@@ -231,7 +260,9 @@ impl CommandData {
     }
 
     pub fn identifiers(&self) -> impl Iterator<Item = (&str, IdentifierKind)> {
-        self.identifiers.iter().map(|(name, kind)| (name.as_str(), *kind))
+        self.identifiers
+            .iter()
+            .map(|(name, kind)| (name.as_str(), *kind))
     }
 
     pub fn contexts(&self) -> impl Iterator<Item = &Described> {
@@ -302,7 +333,11 @@ pub fn parse(text: &str) -> Result<CommandData, String> {
         let record: Record =
             serde_json::from_str(line).map_err(|error| format!("line {}: {error}", number + 1))?;
         match record {
-            Record::Meta { format, lilypond, datadir } => {
+            Record::Meta {
+                format,
+                lilypond,
+                datadir,
+            } => {
                 if format != FORMAT {
                     return Err(format!("records in layout {format}, not {FORMAT}"));
                 }
@@ -317,7 +352,8 @@ pub fn parse(text: &str) -> Result<CommandData, String> {
                 data.markups.insert(f.name.clone(), f);
             }
             Record::MarkupList(f) => {
-                data.markups.insert(f.name.clone(), Function { list: true, ..f });
+                data.markups
+                    .insert(f.name.clone(), Function { list: true, ..f });
             }
             Record::Identifier { name, kind } => {
                 data.identifiers.insert(name, kind);
@@ -399,12 +435,15 @@ fn dump(lilypond: &Path) -> Result<String, String> {
         let said = fs::read_to_string(&log).unwrap_or_default();
         let said = said.lines().last().unwrap_or("").trim().to_owned();
         match finished {
-            Some(status) if status.success() => fs::read_to_string(&out)
-                .map_err(|error| format!("the dump wrote nothing: {error}")),
+            Some(status) if status.success() => {
+                fs::read_to_string(&out).map_err(|error| format!("the dump wrote nothing: {error}"))
+            }
             Some(status) => Err(format!("the dump failed ({status}): {said}")),
             None => {
                 let limit = DUMP_TIMEOUT.as_secs();
-                Err(format!("the dump took longer than {limit} s and was stopped"))
+                Err(format!(
+                    "the dump took longer than {limit} s and was stopped"
+                ))
             }
         }
     });
@@ -438,9 +477,12 @@ fn start_dump(
         .stderr(stderr);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut command, 0);
-    command
-        .spawn()
-        .map_err(|error| failed(&format!("{} could not be started", lilypond.display()), error))
+    command.spawn().map_err(|error| {
+        failed(
+            &format!("{} could not be started", lilypond.display()),
+            error,
+        )
+    })
 }
 
 /// Waits for the dump to exit, and stops it once `DUMP_TIMEOUT` is up, which is the one case that
@@ -524,17 +566,28 @@ mod tests {
                 "drums": 3,
             })
         );
-        assert_eq!(data.datadir.as_deref(), Some(Path::new("/usr/share/lilypond/2.26.0")));
+        assert_eq!(
+            data.datadir.as_deref(),
+            Some(Path::new("/usr/share/lilypond/2.26.0"))
+        );
 
         assert_eq!(arg_kind("ly:pitch?"), ArgKind::Pitch);
         assert_eq!(arg_kind("string?"), ArgKind::Word);
         assert_eq!(arg_kind("markup?"), ArgKind::Markup);
 
         let relative = data.music_function("relative").unwrap();
-        let args: Vec<(ArgKind, bool)> =
-            relative.args.iter().map(|a| (a.kind(), a.optional)).collect();
+        let args: Vec<(ArgKind, bool)> = relative
+            .args
+            .iter()
+            .map(|a| (a.kind(), a.optional))
+            .collect();
         assert_eq!(args, [(ArgKind::Pitch, true), (ArgKind::Music, false)]);
-        assert!(relative.doc.as_deref().is_some_and(|doc| doc.contains("octave")));
+        assert!(
+            relative
+                .doc
+                .as_deref()
+                .is_some_and(|doc| doc.contains("octave"))
+        );
         assert!(data.music_function("bold").is_none());
 
         assert!(!data.markup("bold").unwrap().list);
@@ -544,14 +597,31 @@ mod tests {
         assert_eq!(data.identifier("fermata"), Some(IdentifierKind::Music));
         assert_eq!(data.identifier("major"), Some(IdentifierKind::Scheme));
         assert_eq!(data.identifier("up"), Some(IdentifierKind::Number));
-        assert_eq!(data.identifier("default-language"), Some(IdentifierKind::String));
-        assert_eq!(data.identifier("whiteTriangleMarkup"), Some(IdentifierKind::Markup));
-        assert_eq!(data.identifier("RemoveEmptyStaves"), Some(IdentifierKind::ContextDef));
+        assert_eq!(
+            data.identifier("default-language"),
+            Some(IdentifierKind::String)
+        );
+        assert_eq!(
+            data.identifier("whiteTriangleMarkup"),
+            Some(IdentifierKind::Markup)
+        );
+        assert_eq!(
+            data.identifier("RemoveEmptyStaves"),
+            Some(IdentifierKind::ContextDef)
+        );
         assert_eq!(data.identifier("melody"), None);
 
         let note_head = data.grob("NoteHead").unwrap();
-        assert!(note_head.interfaces.iter().any(|i| i == "note-head-interface"));
-        assert_eq!(data.interface("grob-interface").unwrap().props, ["color", "transparent"]);
+        assert!(
+            note_head
+                .interfaces
+                .iter()
+                .any(|i| i == "note-head-interface")
+        );
+        assert_eq!(
+            data.interface("grob-interface").unwrap().props,
+            ["color", "transparent"]
+        );
 
         let backend = data.property("color", Scope::Backend).unwrap();
         let context = data.property("color", Scope::Context).unwrap();
@@ -644,9 +714,16 @@ mod tests {
         for name in ["fermata", "f", "major"] {
             assert!(data.identifier(name).is_some(), "{name}");
         }
-        assert!(data.datadir.as_deref().is_some_and(Path::is_dir), "{:?}", data.datadir);
+        assert!(
+            data.datadir.as_deref().is_some_and(Path::is_dir),
+            "{:?}",
+            data.datadir
+        );
         // Every predicate has a name, so none falls back to the catch-all by accident.
-        let unnamed = data.music_functions().flat_map(|f| &f.args).filter(|a| a.pred.is_empty());
+        let unnamed = data
+            .music_functions()
+            .flat_map(|f| &f.args)
+            .filter(|a| a.pred.is_empty());
         assert_eq!(unnamed.count(), 0);
     }
 }

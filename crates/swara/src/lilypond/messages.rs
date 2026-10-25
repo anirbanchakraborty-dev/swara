@@ -83,7 +83,13 @@ pub fn parse_stderr(stderr: &str) -> Vec<LyMessage> {
         match header.severity {
             Some(severity) => {
                 let text = header.text.to_owned();
-                messages.push(LyMessage { file, line, col, severity, text });
+                messages.push(LyMessage {
+                    file,
+                    line,
+                    col,
+                    severity,
+                    text,
+                });
                 awaiting = col;
             }
             // A line with a place but no severity word right after a programming error at the same
@@ -101,7 +107,13 @@ pub fn parse_stderr(stderr: &str) -> Vec<LyMessage> {
             // Otherwise it is an error from the reader, which names no severity.
             None => {
                 let text = header.text.to_owned();
-                messages.push(LyMessage { file, line, col, severity: Severity::Error, text });
+                messages.push(LyMessage {
+                    file,
+                    line,
+                    col,
+                    severity: Severity::Error,
+                    text,
+                });
                 awaiting = col;
             }
         }
@@ -135,21 +147,40 @@ impl Location<'_> {
             && let Some(line) = number(line)
             && !path.is_empty()
         {
-            return Some(Location { path, line, col: Some(last) });
+            return Some(Location {
+                path,
+                line,
+                col: Some(last),
+            });
         }
-        (!rest.is_empty()).then_some(Location { path: rest, line: last, col: None })
+        (!rest.is_empty()).then_some(Location {
+            path: rest,
+            line: last,
+            col: None,
+        })
     }
 
     fn file(&self) -> LyFile {
-        if self.path == "-" { LyFile::Stdin } else { LyFile::Path(PathBuf::from(self.path)) }
+        if self.path == "-" {
+            LyFile::Stdin
+        } else {
+            LyFile::Path(PathBuf::from(self.path))
+        }
     }
 }
 
 impl<'l> Header<'l> {
     fn parse(line: &'l str) -> Option<Self> {
         for (word, severity) in SEVERITIES {
-            if let Some(text) = line.strip_prefix(word).and_then(|rest| rest.strip_prefix(": ")) {
-                return Some(Header { location: None, severity: Some(severity), text });
+            if let Some(text) = line
+                .strip_prefix(word)
+                .and_then(|rest| rest.strip_prefix(": "))
+            {
+                return Some(Header {
+                    location: None,
+                    severity: Some(severity),
+                    text,
+                });
             }
         }
         // The leftmost `: SEVERITY: ` with a location before it, so that a path can hold colons
@@ -163,7 +194,11 @@ impl<'l> Header<'l> {
                 }
                 if let Some(location) = Location::parse(&line[..at]) {
                     let text = &line[at + separator.len()..];
-                    let header = Header { location: Some(location), severity: Some(severity), text };
+                    let header = Header {
+                        location: Some(location),
+                        severity: Some(severity),
+                        text,
+                    };
                     found = Some((at, header));
                     break;
                 }
@@ -175,7 +210,11 @@ impl<'l> Header<'l> {
         // A reader error: a location with a column, then the text.
         line.match_indices(": ").find_map(|(at, _)| {
             let location = Location::parse(&line[..at]).filter(|l| l.col.is_some())?;
-            Some(Header { location: Some(location), severity: None, text: &line[at + 2..] })
+            Some(Header {
+                location: Some(location),
+                severity: None,
+                text: &line[at + 2..],
+            })
         })
     }
 }
@@ -193,7 +232,11 @@ fn is_context(source: &str, rest: &str, col: u32) -> bool {
     let indent = col.saturating_sub(1) as usize;
     let mut column = 1;
     for ch in source.chars() {
-        column = if ch == '\t' { (column - 1) / 8 * 8 + 9 } else { column + 1 };
+        column = if ch == '\t' {
+            (column - 1) / 8 * 8 + 9
+        } else {
+            column + 1
+        };
     }
     column - 1 == indent && rest.bytes().take_while(|&b| b == b' ').count() >= indent
 }
@@ -203,7 +246,10 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/lilypond/");
+    const DIR: &str = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/lilypond/"
+    );
 
     fn fixture(name: &str) -> Vec<LyMessage> {
         let stderr = std::fs::read_to_string(format!("{DIR}{name}.stderr")).unwrap();
@@ -215,7 +261,13 @@ mod tests {
     }
 
     #[track_caller]
-    fn check(m: &LyMessage, file: Option<LyFile>, at: (u32, u32), severity: Severity, prefix: &str) {
+    fn check(
+        m: &LyMessage,
+        file: Option<LyFile>,
+        at: (u32, u32),
+        severity: Severity,
+        prefix: &str,
+    ) {
         assert_eq!(m.file, file, "{m:?}");
         assert_eq!((m.line, m.col), (Some(at.0), Some(at.1)), "{m:?}");
         assert_eq!(m.severity, severity, "{m:?}");
@@ -226,7 +278,13 @@ mod tests {
     fn parse_error() {
         let m = fixture("parse-error");
         assert_eq!(m.len(), 1, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 12), Severity::Error, "syntax error");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 12),
+            Severity::Error,
+            "syntax error",
+        );
         // The two context lines are consumed, not added to the text.
         assert_eq!(m[0].text, "syntax error, unexpected '}'");
     }
@@ -235,15 +293,33 @@ mod tests {
     fn unknown_command() {
         let m = fixture("unknown-command");
         assert_eq!(m.len(), 2, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 7), Severity::Error, "unknown command: `\\fooBar'");
-        check(&m[1], Some(LyFile::Stdin), (2, 7), Severity::Error, "string outside of text script");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 7),
+            Severity::Error,
+            "unknown command: `\\fooBar'",
+        );
+        check(
+            &m[1],
+            Some(LyFile::Stdin),
+            (2, 7),
+            Severity::Error,
+            "string outside of text script",
+        );
     }
 
     #[test]
     fn bar_check() {
         let m = fixture("barcheck");
         assert_eq!(m.len(), 1, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 13), Severity::Warning, "bar check failed at: 3/4");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 13),
+            Severity::Warning,
+            "bar check failed at: 3/4",
+        );
         assert_eq!(m[0].text, "bar check failed at: 3/4");
     }
 
@@ -251,9 +327,15 @@ mod tests {
     fn no_version() {
         let m = fixture("no-version");
         assert_eq!(m.len(), 1, "{m:?}");
-        assert_eq!((&m[0].file, m[0].line, m[0].col), (&Some(LyFile::Stdin), Some(1), None));
+        assert_eq!(
+            (&m[0].file, m[0].line, m[0].col),
+            (&Some(LyFile::Stdin), Some(1), None)
+        );
         assert_eq!(m[0].severity, Severity::Warning);
-        assert!(m[0].text.starts_with("no \\version statement found"), "{m:?}");
+        assert!(
+            m[0].text.starts_with("no \\version statement found"),
+            "{m:?}"
+        );
         // Without a column there are no context lines, and the rest of the message follows.
         assert!(m[0].text.ends_with("for future compatibility"), "{m:?}");
     }
@@ -262,9 +344,19 @@ mod tests {
     fn guile_error() {
         let m = fixture("guile-error");
         assert_eq!(m.len(), 1, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 2), Severity::Error, "Guile signaled an error");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 2),
+            Severity::Error,
+            "Guile signaled an error",
+        );
         // Guile's own explanation follows the context lines and belongs to the message.
-        assert!(m[0].text.ends_with("\nIn procedure car: Wrong type (expecting pair): ()"), "{m:?}");
+        assert!(
+            m[0].text
+                .ends_with("\nIn procedure car: Wrong type (expecting pair): ()"),
+            "{m:?}"
+        );
         assert!(!m[0].text.contains("(car '())"), "{m:?}");
     }
 
@@ -272,12 +364,36 @@ mod tests {
     fn reader_error() {
         let m = fixture("reader-error");
         assert_eq!(m.len(), 4, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 2), Severity::Error, "Guile signaled an error");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 2),
+            Severity::Error,
+            "Guile signaled an error",
+        );
         // No severity word, so an error. Nothing follows it but the next message.
-        check(&m[1], Some(LyFile::Stdin), (2, 13), Severity::Error, "Unknown # object: \"#<\"");
+        check(
+            &m[1],
+            Some(LyFile::Stdin),
+            (2, 13),
+            Severity::Error,
+            "Unknown # object: \"#<\"",
+        );
         assert_eq!(m[1].text, "Unknown # object: \"#<\"");
-        check(&m[2], Some(LyFile::Stdin), (2, 2), Severity::Error, "syntax error");
-        check(&m[3], Some(LyFile::Stdin), (2, 13), Severity::Error, "Guile signaled an error");
+        check(
+            &m[2],
+            Some(LyFile::Stdin),
+            (2, 2),
+            Severity::Error,
+            "syntax error",
+        );
+        check(
+            &m[3],
+            Some(LyFile::Stdin),
+            (2, 13),
+            Severity::Error,
+            "Guile signaled an error",
+        );
         assert!(m[3].text.ends_with("\nUnbound variable: <foo>"), "{m:?}");
     }
 
@@ -294,7 +410,13 @@ mod tests {
     fn include_error() {
         let m = fixture("include-error");
         assert_eq!(m.len(), 1, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (2, 10), Severity::Error, "cannot find file: `missing-part.ily'");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (2, 10),
+            Severity::Error,
+            "cannot find file: `missing-part.ily'",
+        );
         // The search path comes before the context lines, which are still found and dropped.
         assert!(m[0].text.contains("\n(search path: `/"), "{m:?}");
         assert!(!m[0].text.contains("\\include"), "{m:?}");
@@ -304,20 +426,44 @@ mod tests {
     fn stdin_and_included_file() {
         let m = fixture("stdin-include");
         assert_eq!(m.len(), 2, "{m:?}");
-        check(&m[0], Some(LyFile::Stdin), (3, 12), Severity::Error, "syntax error");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (3, 12),
+            Severity::Error,
+            "syntax error",
+        );
         let included = path("/fixture/stdin-include.ily");
-        check(&m[1], included, (2, 25), Severity::Warning, "bar check failed at: 3/4");
+        check(
+            &m[1],
+            included,
+            (2, 25),
+            Severity::Warning,
+            "bar check failed at: 3/4",
+        );
     }
 
     #[test]
     fn tab_and_bengali_columns() {
         let tab = fixture("tab-column");
         assert_eq!(tab.len(), 1, "{tab:?}");
-        check(&tab[0], Some(LyFile::Stdin), (2, 17), Severity::Error, "syntax error");
+        check(
+            &tab[0],
+            Some(LyFile::Stdin),
+            (2, 17),
+            Severity::Error,
+            "syntax error",
+        );
         assert_eq!(tab[0].text, "syntax error, unexpected '}'");
         let bengali = fixture("utf8-column");
         assert_eq!(bengali.len(), 1, "{bengali:?}");
-        check(&bengali[0], Some(LyFile::Stdin), (2, 15), Severity::Error, "syntax error");
+        check(
+            &bengali[0],
+            Some(LyFile::Stdin),
+            (2, 15),
+            Severity::Error,
+            "syntax error",
+        );
         assert_eq!(bengali[0].text, "syntax error, unexpected '}'");
     }
 
@@ -326,7 +472,13 @@ mod tests {
         let m = fixture("programming-error");
         assert_eq!(m.len(), 1, "{m:?}");
         let file = path("/fixture/programming-error.ly");
-        check(&m[0], file, (2, 84), Severity::ProgrammingError, "cyclic dependency");
+        check(
+            &m[0],
+            file,
+            (2, 84),
+            Severity::ProgrammingError,
+            "cyclic dependency",
+        );
         // The follow-up line at the same place joins the message instead of becoming an error.
         assert!(m[0].text.ends_with("\ncontinuing, cross fingers"), "{m:?}");
     }
@@ -336,20 +488,35 @@ mod tests {
         let m = fixture("seeded.check");
         let lines: Vec<_> = m.iter().map(|m| (m.line, m.severity)).collect();
         let (e, w) = (Severity::Error, Severity::Warning);
-        assert_eq!(lines, [(Some(3), e), (Some(150), e), (Some(210), e), (Some(20), w)]);
+        assert_eq!(
+            lines,
+            [(Some(3), e), (Some(150), e), (Some(210), e), (Some(20), w)]
+        );
     }
 
     #[test]
     fn path_with_spaces_and_bengali() {
         let m = parse_stderr("/Users/x/আমার গান/lesson 1.ly:3:5: error: syntax error\n");
         assert_eq!(m.len(), 1, "{m:?}");
-        check(&m[0], path("/Users/x/আমার গান/lesson 1.ly"), (3, 5), Severity::Error, "syntax error");
+        check(
+            &m[0],
+            path("/Users/x/আমার গান/lesson 1.ly"),
+            (3, 5),
+            Severity::Error,
+            "syntax error",
+        );
     }
 
     #[test]
     fn windows_drive_letter() {
         let m = parse_stderr("C:\\music\\a.ly:3:5: warning: bar check failed at: 1/4\r\n");
-        check(&m[0], path("C:\\music\\a.ly"), (3, 5), Severity::Warning, "bar check failed");
+        check(
+            &m[0],
+            path("C:\\music\\a.ly"),
+            (3, 5),
+            Severity::Warning,
+            "bar check failed",
+        );
     }
 
     #[test]
@@ -360,7 +527,13 @@ mod tests {
     #[test]
     fn separator_inside_the_text() {
         let m = parse_stderr("-:4:2: warning: expected: error: none\n");
-        check(&m[0], Some(LyFile::Stdin), (4, 2), Severity::Warning, "expected: error: none");
+        check(
+            &m[0],
+            Some(LyFile::Stdin),
+            (4, 2),
+            Severity::Warning,
+            "expected: error: none",
+        );
     }
 
     #[test]
@@ -374,6 +547,9 @@ mod tests {
     #[test]
     fn crlf_line_ends() {
         let stderr = std::fs::read_to_string(format!("{DIR}unknown-command.stderr")).unwrap();
-        assert_eq!(parse_stderr(&stderr.replace('\n', "\r\n")), fixture("unknown-command"));
+        assert_eq!(
+            parse_stderr(&stderr.replace('\n', "\r\n")),
+            fixture("unknown-command")
+        );
     }
 }

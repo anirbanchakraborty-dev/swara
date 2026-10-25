@@ -13,8 +13,16 @@ fn main() {
 /// path dependency, which has no source line.
 fn grammar_rev(lock: &str) -> String {
     lock.split("[[package]]")
-        .find(|package| package.lines().any(|line| line.trim() == r#"name = "tree-sitter-lilypond""#))
-        .and_then(|package| package.lines().find_map(|line| line.trim().strip_prefix("source = \"git+")))
+        .find(|package| {
+            package
+                .lines()
+                .any(|line| line.trim() == r#"name = "tree-sitter-lilypond""#)
+        })
+        .and_then(|package| {
+            package
+                .lines()
+                .find_map(|line| line.trim().strip_prefix("source = \"git+"))
+        })
         .and_then(|source| source.trim_end_matches('"').rsplit_once('#'))
         .map_or_else(|| "local".to_owned(), |(_, rev)| rev.to_owned())
 }

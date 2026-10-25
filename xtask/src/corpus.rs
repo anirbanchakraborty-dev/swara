@@ -1168,9 +1168,11 @@ mod tests {
         }
         let defined = "\\version \"2.26.0\"\n\\score {\n  \\new MyStaff { c'4 d' }\n  \\midi {\n    \\context { \\Staff \\name MyStaff \\alias Staff }\n    \\context { \\Score \\accepts MyStaff }\n  }\n}\n";
         assert_eq!(check_stderr("midi-defined", defined), "");
-        let undefined = "\\version \"2.26.0\"\n\\score {\n  \\new NoSuchStaff { c'4 d' }\n  \\midi { }\n}\n";
+        let undefined =
+            "\\version \"2.26.0\"\n\\score {\n  \\new NoSuchStaff { c'4 d' }\n  \\midi { }\n}\n";
         assert!(
-            check_stderr("midi-undefined", undefined).contains("cannot create context: NoSuchStaff"),
+            check_stderr("midi-undefined", undefined)
+                .contains("cannot create context: NoSuchStaff"),
             "an undefined context must still be reported"
         );
     }

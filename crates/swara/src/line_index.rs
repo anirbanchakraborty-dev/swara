@@ -20,7 +20,12 @@ pub struct LineIndex {
 impl LineIndex {
     pub fn new(text: &str) -> Self {
         let mut starts = vec![0];
-        starts.extend(text.bytes().enumerate().filter(|&(_, b)| b == b'\n').map(|(i, _)| i + 1));
+        starts.extend(
+            text.bytes()
+                .enumerate()
+                .filter(|&(_, b)| b == b'\n')
+                .map(|(i, _)| i + 1),
+        );
         Self { starts }
     }
 
@@ -62,7 +67,11 @@ impl LineIndex {
         };
         let mut column = 1;
         for (offset, ch) in line.char_indices() {
-            let next = if ch == '\t' { (column - 1) / 8 * 8 + 9 } else { column + 1 };
+            let next = if ch == '\t' {
+                (column - 1) / 8 * 8 + 9
+            } else {
+                column + 1
+            };
             if col1 < next {
                 return start + offset;
             }
@@ -102,7 +111,10 @@ mod tests {
 
     /// Every character boundary, plus the end of the text.
     fn boundaries(text: &str) -> Vec<usize> {
-        text.char_indices().map(|(i, _)| i).chain([text.len()]).collect()
+        text.char_indices()
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect()
     }
 
     /// The position of `byte`, worked out from the text alone.
@@ -122,7 +134,11 @@ mod tests {
         for byte in boundaries(MIXED) {
             let p = index.byte_to_position(MIXED, byte, enc);
             assert_eq!(p, expected(MIXED, byte, enc), "byte {byte}");
-            assert_eq!(index.position_to_byte(MIXED, p, enc), byte, "position {p:?}");
+            assert_eq!(
+                index.position_to_byte(MIXED, p, enc),
+                byte,
+                "position {p:?}"
+            );
         }
     }
 
@@ -152,9 +168,18 @@ mod tests {
         let index = LineIndex::new(MIXED);
         let eol = MIXED.find('\n').unwrap();
         for enc in [Encoding::Utf8, Encoding::Utf16] {
-            assert_eq!(index.position_to_byte(MIXED, Position::new(0, 99), enc), eol);
-            assert_eq!(index.position_to_byte(MIXED, Position::new(9, 0), enc), MIXED.len());
-            assert_eq!(index.byte_to_position(MIXED, 999, enc), expected(MIXED, MIXED.len(), enc));
+            assert_eq!(
+                index.position_to_byte(MIXED, Position::new(0, 99), enc),
+                eol
+            );
+            assert_eq!(
+                index.position_to_byte(MIXED, Position::new(9, 0), enc),
+                MIXED.len()
+            );
+            assert_eq!(
+                index.byte_to_position(MIXED, 999, enc),
+                expected(MIXED, MIXED.len(), enc)
+            );
         }
     }
 
@@ -172,7 +197,10 @@ mod tests {
         let line = "{ c4^\"𝄞\" } }";
         assert_eq!(lilypond_byte(line, 12).1, 14);
         let index = LineIndex::new(line);
-        assert_eq!(index.byte_to_position(line, 14, Encoding::Utf16).character, 12);
+        assert_eq!(
+            index.byte_to_position(line, 14, Encoding::Utf16).character,
+            12
+        );
     }
 
     #[test]
@@ -192,7 +220,10 @@ mod tests {
 
     /// The fixture's message names a line and column, and that column is the last `}` on it.
     fn fixture_points_at_last_brace(name: &str) {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/fixtures/lilypond/");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/lilypond/"
+        );
         let text = std::fs::read_to_string(format!("{dir}{name}.ly")).unwrap();
         let stderr = std::fs::read_to_string(format!("{dir}{name}.stderr")).unwrap();
         let mut fields = stderr.lines().next().unwrap().split(':').skip(1);
@@ -220,10 +251,16 @@ mod tests {
             let start = |index: &LineIndex, text: &str| {
                 index.position_to_byte(text, Position::new(line, 0), Encoding::Utf8)
             };
-            assert_eq!(start(&crlf_index, &crlf), start(&lf_index, lf) + line as usize);
+            assert_eq!(
+                start(&crlf_index, &crlf),
+                start(&lf_index, lf) + line as usize
+            );
         }
         // The end of a line is before its `\r`.
-        assert_eq!(crlf_index.position_to_byte(&crlf, Position::new(1, 9), Encoding::Utf16), 5);
+        assert_eq!(
+            crlf_index.position_to_byte(&crlf, Position::new(1, 9), Encoding::Utf16),
+            5
+        );
         assert_eq!(crlf_index.lilypond_column_to_byte(&crlf, 1, 9), 5);
     }
 }

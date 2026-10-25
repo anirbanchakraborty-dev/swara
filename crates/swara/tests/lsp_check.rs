@@ -64,7 +64,10 @@ fn one_check_after_typing_stops() {
     assert!(wait_until(WAIT, || !fake.runs().is_empty()), "no check ran");
     let started = fs::metadata(&fake.log).unwrap().modified().unwrap();
     let after = started.duration_since(last_edit).unwrap_or_default();
-    assert!(after >= Duration::from_millis(330), "the check started {after:?} after the last edit");
+    assert!(
+        after >= Duration::from_millis(330),
+        "the check started {after:?} after the last edit"
+    );
     assert_all_gone(&fake, 2);
     sleep(Duration::from_millis(500));
     assert_eq!(fake.runs().len(), 1, "{:?}", fake.runs());
@@ -78,14 +81,22 @@ fn stale_check_killed() {
     let file = file_uri(&dir.join("lesson.ly"));
     client.open(&file, "{ c'4 }\n");
     insert(&mut client, &file, 2, Position::new(0, 2), "d ");
-    assert!(wait_until(WAIT, || fake.pids().len() == 2), "the first check never started");
+    assert!(
+        wait_until(WAIT, || fake.pids().len() == 2),
+        "the first check never started"
+    );
     let first = fake.pids();
     sleep(Duration::from_millis(100));
     insert(&mut client, &file, 3, Position::new(0, 2), "e ");
     // The first run printed its error before it was stopped, so publishing its result would show.
     let publishes = client.publishes_for(&file, Duration::from_millis(1500));
-    assert!(publishes.iter().flatten().all(|d| !from_lilypond(&d)), "{publishes:?}");
-    let gone = wait_until(Duration::from_secs(3), || first.iter().all(|&pid| !alive(pid)));
+    assert!(
+        publishes.iter().flatten().all(|d| !from_lilypond(&d)),
+        "{publishes:?}"
+    );
+    let gone = wait_until(Duration::from_secs(3), || {
+        first.iter().all(|&pid| !alive(pid))
+    });
     assert!(gone, "the first check is still running: {first:?}");
     assert_eq!(fake.runs().len(), 2, "{:?}", fake.runs());
     // Shutting the server down stops the second.
@@ -104,9 +115,15 @@ fn runaway_check_times_out() {
     let information = Some(DiagnosticSeverity::INFORMATION);
     let (diagnostics, _) =
         client.wait_diagnostics(&file, WAIT, |d| d.iter().any(|d| d.severity == information));
-    let stopped: Vec<_> = diagnostics.iter().filter(|d| d.severity == information).collect();
+    let stopped: Vec<_> = diagnostics
+        .iter()
+        .filter(|d| d.severity == information)
+        .collect();
     assert_eq!(stopped.len(), 1, "{diagnostics:?}");
-    assert_eq!(stopped[0].message, "LilyPond check took longer than 1 s and was stopped");
+    assert_eq!(
+        stopped[0].message,
+        "LilyPond check took longer than 1 s and was stopped"
+    );
     assert_eq!(stopped[0].source.as_deref(), Some("lilypond"));
     assert_all_gone(&fake, 2);
 }
@@ -117,7 +134,10 @@ fn check_errors_published() {
     let mode = format!("stderr:{}", fixture("parse-error.stderr").display());
     let (mut client, _fake) = start(&dir, &mode, true, &[]);
     let file = file_uri(&dir.join("parse-error.ly"));
-    client.open(&file, &fs::read_to_string(fixture("parse-error.ly")).unwrap());
+    client.open(
+        &file,
+        &fs::read_to_string(fixture("parse-error.ly")).unwrap(),
+    );
     // A comment typed on a new last line starts the check without moving line 2.
     insert(&mut client, &file, 2, Position::new(2, 0), "% done\n");
     let (diagnostics, _) =
@@ -126,9 +146,15 @@ fn check_errors_published() {
     assert_eq!(lilypond.len(), 1, "{diagnostics:?}");
     assert_eq!(lilypond[0].message, "syntax error, unexpected '}'");
     assert_eq!(lilypond[0].severity, Some(DiagnosticSeverity::ERROR));
-    assert_eq!(lilypond[0].range, Range::new(Position::new(1, 11), Position::new(1, 12)));
+    assert_eq!(
+        lilypond[0].range,
+        Range::new(Position::new(1, 11), Position::new(1, 12))
+    );
     // The stray brace is a syntax error in the tree too, so the instant layer still shows it.
-    let swara = diagnostics.iter().filter(|d| d.source.as_deref() == Some("swara")).count();
+    let swara = diagnostics
+        .iter()
+        .filter(|d| d.source.as_deref() == Some("swara"))
+        .count();
     assert_eq!(swara, 1, "{diagnostics:?}");
 }
 
@@ -139,7 +165,10 @@ fn ily_gets_its_own_diagnostics() {
     let part = dir.join("part 1.ily");
     fs::write(&part, "partMusic = {\n  c'4 d' e'\n}\n").unwrap();
     let stderr = dir.join("stderr.txt");
-    let message = format!("{}:2:7: error: unknown command: `\\fooBar'\n", part.display());
+    let message = format!(
+        "{}:2:7: error: unknown command: `\\fooBar'\n",
+        part.display()
+    );
     fs::write(&stderr, message).unwrap();
     let (mut client, _fake) = start(&dir, &format!("stderr:{}", stderr.display()), true, &[]);
     let main = file_uri(&dir.join("main.ly"));
@@ -149,7 +178,10 @@ fn ily_gets_its_own_diagnostics() {
     let (diagnostics, _) = client.wait_diagnostics(&part, WAIT, |d| !d.is_empty());
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].source.as_deref(), Some("lilypond"));
-    assert_eq!(diagnostics[0].range, Range::new(Position::new(1, 6), Position::new(1, 8)));
+    assert_eq!(
+        diagnostics[0].range,
+        Range::new(Position::new(1, 6), Position::new(1, 8))
+    );
     // The next check is clean, so the include's diagnostics clear.
     fs::write(&stderr, "").unwrap();
     insert(&mut client, &main, 3, Position::new(3, 0), "% again\n");
@@ -180,7 +212,10 @@ fn real_check_finds_seeded_errors() {
     insert(&mut client, &file, 2, end, "% done\n");
     let enough = |d: &[lsp_types::Diagnostic]| d.iter().filter(from_lilypond).count() >= 4;
     let (diagnostics, _) = client.wait_diagnostics(&file, Duration::from_secs(20), enough);
-    for expected in fs::read_to_string(fixture("seeded.expect")).unwrap().lines() {
+    for expected in fs::read_to_string(fixture("seeded.expect"))
+        .unwrap()
+        .lines()
+    {
         let [line, severity, words] = expected.splitn(3, ':').collect::<Vec<_>>()[..] else {
             panic!("bad line in seeded.expect: {expected}");
         };
@@ -214,9 +249,17 @@ fn real_check_reads_includes_from_a_bengali_folder() {
     fs::write(&part, "partMusic = { c'4 \\fooBar d' }\n").unwrap();
     let mut client = TestClient::spawn(json!({"autoCheck": true, "lilypond": null}));
     let main = file_uri(&dir.join("main.ly"));
-    client.open(&main, "\\version \"2.26.0\"\n\\include \"part 1.ily\"\n{ \\partMusic }\n");
+    client.open(
+        &main,
+        "\\version \"2.26.0\"\n\\include \"part 1.ily\"\n{ \\partMusic }\n",
+    );
     insert(&mut client, &main, 2, Position::new(3, 0), "% done\n");
     let unknown = |d: &[lsp_types::Diagnostic]| d.iter().any(|d| d.message.contains("fooBar"));
-    let (diagnostics, _) = client.wait_diagnostics(&file_uri(&part), Duration::from_secs(20), unknown);
-    assert_eq!(diagnostics[0].range.start, Position::new(0, 18), "{diagnostics:?}");
+    let (diagnostics, _) =
+        client.wait_diagnostics(&file_uri(&part), Duration::from_secs(20), unknown);
+    assert_eq!(
+        diagnostics[0].range.start,
+        Position::new(0, 18),
+        "{diagnostics:?}"
+    );
 }

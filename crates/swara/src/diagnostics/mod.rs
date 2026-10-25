@@ -22,7 +22,11 @@ pub struct Layers {
 
 impl Layers {
     pub fn merged(&self) -> Vec<Diagnostic> {
-        [&self.instant, &self.check, &self.build].into_iter().flatten().cloned().collect()
+        [&self.instant, &self.check, &self.build]
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect()
     }
 
     /// Moves the `check` and `build` entries after an edit. An entry inside the edited range is
@@ -60,7 +64,13 @@ pub fn shift_all(diagnostics: &mut [Diagnostic], edit: &InputEdit) {
 }
 
 /// An error over the bytes `start..end` of `doc`, with positions in `enc`.
-pub(crate) fn error(doc: &Document, enc: Encoding, start: usize, end: usize, message: String) -> Diagnostic {
+pub(crate) fn error(
+    doc: &Document,
+    enc: Encoding,
+    start: usize,
+    end: usize,
+    message: String,
+) -> Diagnostic {
     let position = |byte| doc.index.byte_to_position(&doc.text, byte, enc);
     Diagnostic {
         range: Range::new(position(start), position(end)),

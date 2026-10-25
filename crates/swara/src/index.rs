@@ -64,7 +64,11 @@ impl Summary {
 /// and of the open files that include it. A name defined in two files appears twice.
 pub fn visible_definitions(doc: &Document, index: &Index) -> Vec<Definition> {
     let path = file_uri::to_path(&doc.uri);
-    let own = summarize(&doc.tree, &doc.text, path.as_deref().unwrap_or(Path::new("")));
+    let own = summarize(
+        &doc.tree,
+        &doc.text,
+        path.as_deref().unwrap_or(Path::new("")),
+    );
     let mut definitions = own.definitions;
     if let Some(path) = &path {
         // The index holds this file too, perhaps from an older version of it.

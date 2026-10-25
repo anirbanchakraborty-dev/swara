@@ -112,15 +112,24 @@ pub fn check_spec(
     let out_dir = dir.join(format!("run-{}", next_number()));
     let mut settings = OsString::from("-dinclude-settings=");
     settings.push(dir.join(SETTINGS_NAME));
-    let mut args: Vec<OsString> =
-        vec![lilypond.into(), "-l".into(), "WARNING".into(), settings, "-I".into()];
+    let mut args: Vec<OsString> = vec![
+        lilypond.into(),
+        "-l".into(),
+        "WARNING".into(),
+        settings,
+        "-I".into(),
+    ];
     args.push(file.parent().unwrap_or(Path::new("/")).into());
     for folder in include_paths {
         args.push("-I".into());
         args.push(folder.into());
     }
     args.push("-o".into());
-    args.push(out_dir.join(file.file_stem().unwrap_or("swara".as_ref())).into());
+    args.push(
+        out_dir
+            .join(file.file_stem().unwrap_or("swara".as_ref()))
+            .into(),
+    );
     args.push("-".into());
     Ok(RunSpec {
         kind: RunKind::Check,
@@ -139,7 +148,11 @@ pub fn spawn(spec: RunSpec, results: Sender<RunResult>) -> io::Result<Running> {
     let (program, args) = spec.args.split_first().expect("a run names its program");
     let mut command = Command::new(program);
     english(command.args(args))
-        .stdin(if spec.stdin.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if spec.stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::null())
         .stderr(Stdio::piped());
     #[cfg(unix)]
@@ -173,7 +186,11 @@ pub fn spawn(spec: RunSpec, results: Sender<RunResult>) -> io::Result<Running> {
         RunKind::Check => check_timeout(),
         RunKind::Build | RunKind::Preview => build_timeout(),
     };
-    Ok(Running { id, child, deadline: Instant::now() + timeout })
+    Ok(Running {
+        id,
+        child,
+        deadline: Instant::now() + timeout,
+    })
 }
 
 /// The next number from the one sequence that tells runs and their folders apart.
@@ -201,12 +218,18 @@ pub fn build_timeout() -> Duration {
 /// The milliseconds in the variable `name`, read only under `SWARA_TEST=1`.
 fn test_millis(name: &str) -> Option<u64> {
     let testing = std::env::var_os("SWARA_TEST").is_some_and(|v| v == "1");
-    std::env::var(name).ok().filter(|_| testing).and_then(|m| m.parse().ok())
+    std::env::var(name)
+        .ok()
+        .filter(|_| testing)
+        .and_then(|m| m.parse().ok())
 }
 
 /// Removes this server's folder in the system's temporary folder, with everything in it.
 pub fn remove_work_dir() {
-    let dir = WORK_DIR.lock().unwrap_or_else(PoisonError::into_inner).take();
+    let dir = WORK_DIR
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
     if let Some(dir) = dir {
         let _ = fs::remove_dir_all(dir);
     }
@@ -235,7 +258,11 @@ fn make_work_dir(base: &Path) -> io::Result<PathBuf> {
     for attempt in 0..16 {
         let mut hasher = RandomState::new().build_hasher();
         hasher.write_u64(attempt);
-        let dir = base.join(format!("swara-{}-{:016x}", std::process::id(), hasher.finish()));
+        let dir = base.join(format!(
+            "swara-{}-{:016x}",
+            std::process::id(),
+            hasher.finish()
+        ));
         match builder.create(&dir) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -252,7 +279,10 @@ fn make_work_dir(base: &Path) -> io::Result<PathBuf> {
         }
         return Ok(dir);
     }
-    Err(io::Error::new(io::ErrorKind::AlreadyExists, "every name tried for the work folder was taken"))
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "every name tried for the work folder was taken",
+    ))
 }
 
 /// Whether `dir` is still a work folder this server can trust: a folder and not a link to one,
@@ -298,7 +328,10 @@ mod tests {
         let mut command = Command::new("lilypond");
         english(&mut command);
         let envs: Vec<_> = command.get_envs().collect();
-        assert!(envs.contains(&("LC_ALL".as_ref(), Some("C.UTF-8".as_ref()))), "{envs:?}");
+        assert!(
+            envs.contains(&("LC_ALL".as_ref(), Some("C.UTF-8".as_ref()))),
+            "{envs:?}"
+        );
         assert!(envs.contains(&("LANGUAGE".as_ref(), None)), "{envs:?}");
     }
 

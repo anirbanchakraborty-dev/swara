@@ -18,7 +18,13 @@ pub fn syntax_errors(doc: &Document, enc: Encoding) -> Vec<Diagnostic> {
     while let Some(node) = stack.pop() {
         if node.is_missing() {
             let message = format!("missing `{}`", node.kind());
-            found.push(error(doc, enc, node.start_byte(), node.start_byte(), message));
+            found.push(error(
+                doc,
+                enc,
+                node.start_byte(),
+                node.start_byte(),
+                message,
+            ));
         } else if node.is_error() {
             let token = first_token(node);
             // A tree out of step with the text must cost a message, not the server.

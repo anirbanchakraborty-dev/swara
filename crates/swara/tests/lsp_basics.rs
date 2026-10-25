@@ -41,8 +41,16 @@ fn advertises_capabilities() {
     };
     assert_eq!(sync.open_close, Some(true));
     assert_eq!(sync.change, Some(TextDocumentSyncKind::INCREMENTAL));
-    assert!(matches!(sync.save, Some(TextDocumentSyncSaveOptions::SaveOptions(_))));
-    let triggers = caps.completion_provider.as_ref().unwrap().trigger_characters.clone();
+    assert!(matches!(
+        sync.save,
+        Some(TextDocumentSyncSaveOptions::SaveOptions(_))
+    ));
+    let triggers = caps
+        .completion_provider
+        .as_ref()
+        .unwrap()
+        .trigger_characters
+        .clone();
     assert_eq!(triggers, Some(vec!["\\".to_string(), ".".to_string()]));
     assert!(caps.hover_provider.is_some());
     assert!(caps.definition_provider.is_some());
@@ -72,7 +80,10 @@ fn unexpected_token_published() {
     let (diagnostics, _) = client.wait_diagnostics(&file, WAIT, |d| !d.is_empty());
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
     assert_eq!(diagnostics[0].message, "unexpected `}`");
-    assert_eq!(diagnostics[0].range, Range::new(Position::new(0, 8), Position::new(0, 9)));
+    assert_eq!(
+        diagnostics[0].range,
+        Range::new(Position::new(0, 8), Position::new(0, 9))
+    );
 }
 
 #[test]
@@ -94,7 +105,11 @@ fn utf16_client_gets_utf16_ranges() {
     client.open(&file, "{ c^\"𝄞\" } }");
     let (diagnostics, _) = client.wait_diagnostics(&file, WAIT, |d| !d.is_empty());
     // 𝄞 is two UTF-16 units, so the stray brace starts at unit 11, though at byte 13.
-    assert_eq!(diagnostics[0].range.start, Position::new(0, 11), "{diagnostics:?}");
+    assert_eq!(
+        diagnostics[0].range.start,
+        Position::new(0, 11),
+        "{diagnostics:?}"
+    );
 }
 
 #[test]
@@ -117,7 +132,10 @@ fn definition_and_outline_in_utf16() {
         panic!("no definition: {found:?}");
     };
     assert_eq!(location.uri, defs);
-    assert_eq!(location.range, Range::new(Position::new(0, 0), Position::new(0, 5)));
+    assert_eq!(
+        location.range,
+        Range::new(Position::new(0, 0), Position::new(0, 5))
+    );
     let outline = client.request::<DocumentSymbolRequest>(DocumentSymbolParams {
         text_document: TextDocumentIdentifier { uri: defs.clone() },
         work_done_progress_params: Default::default(),
@@ -145,14 +163,25 @@ impl Rng {
 fn position(text: &str, byte: usize, utf16: bool) -> Position {
     let before = &text[..byte];
     let line_text = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
-    let character = if utf16 { line_text.encode_utf16().count() } else { line_text.len() };
+    let character = if utf16 {
+        line_text.encode_utf16().count()
+    } else {
+        line_text.len()
+    };
     Position::new(before.matches('\n').count() as u32, character as u32)
 }
 
 /// Every node, named or not, with its kind and byte range. `swara/debugTree` writes the same.
 fn dump(node: Node, out: &mut String) {
     let missing = if node.is_missing() { " MISSING" } else { "" };
-    write!(out, "({}{missing} {}-{}", node.kind(), node.start_byte(), node.end_byte()).unwrap();
+    write!(
+        out,
+        "({}{missing} {}-{}",
+        node.kind(),
+        node.start_byte(),
+        node.end_byte()
+    )
+    .unwrap();
     for child in node.children(&mut node.walk()) {
         out.push(' ');
         dump(child, out);
@@ -162,7 +191,9 @@ fn dump(node: Node, out: &mut String) {
 
 fn fresh_dump(text: &str) -> String {
     let mut parser = Parser::new();
-    parser.set_language(&tree_sitter_lilypond::LANGUAGE.into()).unwrap();
+    parser
+        .set_language(&tree_sitter_lilypond::LANGUAGE.into())
+        .unwrap();
     let tree = parser.parse(text, None).unwrap();
     let mut out = String::new();
     dump(tree.root_node(), &mut out);
@@ -182,7 +213,11 @@ fn random_edits(encodings: &[&'static str], utf16: bool) {
     ];
     let mut rng = Rng(0x5eed_1234_abcd);
     for version in 2..202 {
-        let starts: Vec<usize> = text.char_indices().map(|(i, _)| i).chain([text.len()]).collect();
+        let starts: Vec<usize> = text
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain([text.len()])
+            .collect();
         let at = starts[rng.below(starts.len())];
         let (end, insert) = if at < text.len() && rng.below(3) == 0 {
             (at + text[at..].chars().next().unwrap().len_utf8(), "")
@@ -194,7 +229,9 @@ fn random_edits(encodings: &[&'static str], utf16: bool) {
         text.replace_range(at..end, insert);
     }
     let result = client.request_raw("swara/debugTree", TextDocumentIdentifier::new(file));
-    let result = result.response_result.expect("swara/debugTree answers when SWARA_TEST=1");
+    let result = result
+        .response_result
+        .expect("swara/debugTree answers when SWARA_TEST=1");
     assert_eq!(result["text"], text);
     assert_eq!(result["tree"], fresh_dump(&text));
 }

@@ -28,7 +28,11 @@ fn info(mut command: Command) -> serde_json::Value {
 /// The grammar library Cargo built for these tests. A dependency's library stays in
 /// `target/<profile>/deps`, beside this test program, and `cargo build` also copies it one folder up.
 fn built_library() -> PathBuf {
-    let deps = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     [deps.join(LIBNAME), deps.parent().unwrap().join(LIBNAME)]
         .into_iter()
         .find(|candidate| candidate.is_file())
@@ -65,7 +69,9 @@ fn info_reports_grammar_and_abi() {
         v["grammar_rev"].as_str().is_some_and(|rev| !rev.is_empty()),
         "grammar_rev names the grammar commit: {v}"
     );
-    let grammar = v["grammar"].as_str().unwrap_or_else(|| panic!("no grammar library found: {v}"));
+    let grammar = v["grammar"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no grammar library found: {v}"));
     assert_eq!(Path::new(grammar), expected);
 }
 

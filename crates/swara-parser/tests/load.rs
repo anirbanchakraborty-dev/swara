@@ -15,7 +15,11 @@ const LIBNAME: &str = "libswara_parser.so";
 /// Integration tests run from `target/<profile>/deps`. The library Cargo builds for them stays
 /// there, and `cargo build` also copies it one folder up.
 fn library() -> PathBuf {
-    let deps = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let deps = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     [deps.join(LIBNAME), deps.parent().unwrap().join(LIBNAME)]
         .into_iter()
         .find(|candidate| candidate.is_file())
@@ -29,8 +33,9 @@ fn exported_symbol_gives_abi_15() {
     // SAFETY: the library is this crate's own build, which has no initialisers of its own.
     let library = unsafe { Library::new(&path) }.unwrap();
     // SAFETY: the symbol has the signature of every generated grammar's language function.
-    let function = unsafe { library.get::<unsafe extern "C" fn() -> *const ()>("tree_sitter_lilypond_swara") }
-        .unwrap();
+    let function =
+        unsafe { library.get::<unsafe extern "C" fn() -> *const ()>("tree_sitter_lilypond_swara") }
+            .unwrap();
     // SAFETY: as above; the pointer stays valid while `library` is loaded, which outlives `language`.
     let language = Language::new(unsafe { LanguageFn::from_raw(*function) });
 

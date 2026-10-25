@@ -43,7 +43,9 @@ pub fn to_diagnostic(message: &LyMessage, text: &str, index: &LineIndex) -> Diag
 /// octave marks and duration, and otherwise one character. Nothing at the end of a line.
 fn word_len(rest: &str) -> usize {
     let mut chars = rest.char_indices();
-    let Some((_, first)) = chars.next() else { return 0 };
+    let Some((_, first)) = chars.next() else {
+        return 0;
+    };
     if first == '\n' || first == '\r' {
         return 0;
     }
@@ -51,5 +53,7 @@ fn word_len(rest: &str) -> usize {
         return first.len_utf8();
     }
     let in_word = |c: char| c.is_alphanumeric() || c == '\'' || c == ',';
-    chars.find(|&(_, c)| !in_word(c)).map_or(rest.len(), |(i, _)| i)
+    chars
+        .find(|&(_, c)| !in_word(c))
+        .map_or(rest.len(), |(i, _)| i)
 }

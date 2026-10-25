@@ -34,7 +34,11 @@ pub fn from_path(path: &Path) -> Option<Uri> {
         return None;
     }
     let path = path.to_str()?;
-    let path = if cfg!(windows) { format!("/{}", path.replace('\\', "/")) } else { path.to_owned() };
+    let path = if cfg!(windows) {
+        format!("/{}", path.replace('\\', "/"))
+    } else {
+        path.to_owned()
+    };
     let mut uri = String::from("file://");
     for &byte in path.as_bytes() {
         if byte.is_ascii_alphanumeric() || SAFE.contains(&byte) {
@@ -90,15 +94,24 @@ mod tests {
     fn marks_neovim_leaves_alone() {
         let path = Path::new("/tmp/a-b_c.d~e!$&'()*+,;=:@/f#g%h?.ly");
         let made = from_path(path).unwrap();
-        assert_eq!(made.as_str(), "file:///tmp/a-b_c.d~e!$&'()*+,;=:@/f%23g%25h%3F.ly");
+        assert_eq!(
+            made.as_str(),
+            "file:///tmp/a-b_c.d~e!$&'()*+,;=:@/f%23g%25h%3F.ly"
+        );
         assert_eq!(to_path(&made).as_deref(), Some(path));
     }
 
     #[cfg(unix)]
     #[test]
     fn localhost_and_lowercase_escapes() {
-        assert_eq!(to_path(&uri("file://localhost/tmp/a.ly")), Some(PathBuf::from("/tmp/a.ly")));
-        assert_eq!(to_path(&uri("file:///tmp/a%c3%a9.ly")), Some(PathBuf::from("/tmp/aé.ly")));
+        assert_eq!(
+            to_path(&uri("file://localhost/tmp/a.ly")),
+            Some(PathBuf::from("/tmp/a.ly"))
+        );
+        assert_eq!(
+            to_path(&uri("file:///tmp/a%c3%a9.ly")),
+            Some(PathBuf::from("/tmp/aé.ly"))
+        );
     }
 
     #[test]

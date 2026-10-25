@@ -65,14 +65,21 @@ impl Lilypond {
 }
 
 pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
-    let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
+    let file = if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    };
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(&file))
         .find(|candidate| candidate.is_file())
 }
 
 fn version_of(lilypond: &Path) -> Option<String> {
-    let out = english(&mut Command::new(lilypond)).arg("--version").output().ok()?;
+    let out = english(&mut Command::new(lilypond))
+        .arg("--version")
+        .output()
+        .ok()?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     parse_version(stdout.lines().next()?)
 }
@@ -83,7 +90,9 @@ fn parse_version(first_line: &str) -> Option<String> {
     let mut words = first_line.split_whitespace();
     words.find(|word| *word == "LilyPond")?;
     let version = words.next()?;
-    version.starts_with(|c: char| c.is_ascii_digit()).then(|| version.to_owned())
+    version
+        .starts_with(|c: char| c.is_ascii_digit())
+        .then(|| version.to_owned())
 }
 
 #[cfg(test)]
@@ -96,7 +105,10 @@ mod tests {
             parse_version("GNU LilyPond 2.26.0 (running Guile 3.0)").as_deref(),
             Some("2.26.0")
         );
-        assert_eq!(parse_version("GNU LilyPond 2.24.4").as_deref(), Some("2.24.4"));
+        assert_eq!(
+            parse_version("GNU LilyPond 2.24.4").as_deref(),
+            Some("2.24.4")
+        );
         assert_eq!(parse_version("lilypond: command not found"), None);
         assert_eq!(parse_version("GNU LilyPond"), None);
     }

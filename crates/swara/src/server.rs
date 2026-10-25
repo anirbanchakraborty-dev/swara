@@ -22,15 +22,14 @@ use lsp_types::request::{
 };
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, Range,
-    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
-    ExecuteCommandOptions, ExecuteCommandParams,
-    HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
-    OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
-    ServerInfo, ShowMessageParams, TextDocumentIdentifier,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
-    TextDocumentSyncSaveOptions, Uri,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams,
+    DocumentSymbolResponse, ExecuteCommandOptions, ExecuteCommandParams, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverParams, HoverProviderCapability, InitializeParams,
+    InitializeResult, LogMessageParams, MessageType, OneOf, PositionEncodingKind,
+    PublishDiagnosticsParams, Range, SaveOptions, ServerCapabilities, ServerInfo,
+    ShowMessageParams, TextDocumentIdentifier, TextDocumentSyncCapability, TextDocumentSyncKind,
+    TextDocumentSyncOptions, TextDocumentSyncSaveOptions, Uri,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -40,17 +39,17 @@ use crate::build::{self, BuildFinished, Outputs};
 use crate::commanddata::{self, CommandData};
 use crate::completion;
 use crate::definition;
-use crate::format::{self, FormatOutcome};
 use crate::diagnostics::{self, Layers, includes, names, syntax};
 use crate::document::Document;
 use crate::file_uri;
+use crate::format::{self, FormatOutcome};
 use crate::hover;
 use crate::index::Index;
 use crate::info;
-use crate::line_index::{Encoding, LineIndex};
 use crate::lilypond::messages::{self, LyFile};
 use crate::lilypond::run::{self, RunKind, RunResult, Running};
 use crate::lilypond::to_diagnostic;
+use crate::line_index::{Encoding, LineIndex};
 use crate::symbols;
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
@@ -77,7 +76,11 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { auto_check: true, lilypond: None, include_paths: Vec::new() }
+        Self {
+            auto_check: true,
+            lilypond: None,
+            include_paths: Vec::new(),
+        }
     }
 }
 
@@ -121,8 +124,14 @@ fn serve(connection: &Connection) -> Result<()> {
 /// which every client must accept.
 fn negotiate(params: &InitializeParams) -> Encoding {
     let general = params.capabilities.general.as_ref();
-    let offered = general.and_then(|g| g.position_encodings.as_deref()).unwrap_or_default();
-    if offered.contains(&PositionEncodingKind::UTF8) { Encoding::Utf8 } else { Encoding::Utf16 }
+    let offered = general
+        .and_then(|g| g.position_encodings.as_deref())
+        .unwrap_or_default();
+    if offered.contains(&PositionEncodingKind::UTF8) {
+        Encoding::Utf8
+    } else {
+        Encoding::Utf16
+    }
 }
 
 fn capabilities(encoding: Encoding) -> ServerCapabilities {
@@ -132,14 +141,16 @@ fn capabilities(encoding: Encoding) -> ServerCapabilities {
     };
     ServerCapabilities {
         position_encoding: Some(position_encoding),
-        text_document_sync: Some(TextDocumentSyncCapability::Options(TextDocumentSyncOptions {
-            open_close: Some(true),
-            change: Some(TextDocumentSyncKind::INCREMENTAL),
-            save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
-                include_text: Some(false),
-            })),
-            ..Default::default()
-        })),
+        text_document_sync: Some(TextDocumentSyncCapability::Options(
+            TextDocumentSyncOptions {
+                open_close: Some(true),
+                change: Some(TextDocumentSyncKind::INCREMENTAL),
+                save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                    include_text: Some(false),
+                })),
+                ..Default::default()
+            },
+        )),
         completion_provider: Some(CompletionOptions {
             trigger_characters: Some(vec!["\\".into(), ".".into()]),
             ..Default::default()
@@ -338,14 +349,27 @@ impl<'c> Server<'c> {
     fn next_deadline(&self) -> Option<Instant> {
         let checks = self.checks.values().map(|check| check.running.deadline);
         let builds = self.builds.values().map(|build| build.running.deadline);
-        let previews = self.previews.values().map(|preview| preview.running.deadline);
-        self.pauses.values().copied().chain(checks).chain(builds).chain(previews).min()
+        let previews = self
+            .previews
+            .values()
+            .map(|preview| preview.running.deadline);
+        self.pauses
+            .values()
+            .copied()
+            .chain(checks)
+            .chain(builds)
+            .chain(previews)
+            .min()
     }
 
     fn fire_due(&mut self) -> Result<()> {
         let now = Instant::now();
-        let due: Vec<Uri> =
-            self.pauses.iter().filter(|(_, at)| **at <= now).map(|(uri, _)| uri.clone()).collect();
+        let due: Vec<Uri> = self
+            .pauses
+            .iter()
+            .filter(|(_, at)| **at <= now)
+            .map(|(uri, _)| uri.clone())
+            .collect();
         for uri in due {
             self.pauses.remove(&uri);
             self.start_check(&uri)?;
@@ -377,23 +401,29 @@ impl<'c> Server<'c> {
             "swara/debugCommandData" if self.test_mode => {
                 Response::new_ok(id, self.data.as_ref().map(CommandData::summary))
             }
-            Completion::METHOD => match serde_json::from_value::<CompletionParams>(request.params) {
-                Ok(params) => {
-                    let at = params.text_document_position;
-                    let items = self.documents.get(&at.text_document.uri).map(|doc| {
-                        let pos = doc.index.position_to_byte(&doc.text, at.position, self.encoding);
-                        let data = self.data.as_ref();
-                        completion::complete(doc, pos, data, &self.index, self.encoding)
-                    });
-                    Response::new_ok(id, items.map(CompletionResponse::Array))
+            Completion::METHOD => {
+                match serde_json::from_value::<CompletionParams>(request.params) {
+                    Ok(params) => {
+                        let at = params.text_document_position;
+                        let items = self.documents.get(&at.text_document.uri).map(|doc| {
+                            let pos =
+                                doc.index
+                                    .position_to_byte(&doc.text, at.position, self.encoding);
+                            let data = self.data.as_ref();
+                            completion::complete(doc, pos, data, &self.index, self.encoding)
+                        });
+                        Response::new_ok(id, items.map(CompletionResponse::Array))
+                    }
+                    Err(error) => invalid(id, &error.to_string()),
                 }
-                Err(error) => invalid(id, &error.to_string()),
-            },
+            }
             HoverRequest::METHOD => match serde_json::from_value::<HoverParams>(request.params) {
                 Ok(params) => {
                     let at = params.text_document_position_params;
                     let shown = self.documents.get(&at.text_document.uri).and_then(|doc| {
-                        let pos = doc.index.position_to_byte(&doc.text, at.position, self.encoding);
+                        let pos = doc
+                            .index
+                            .position_to_byte(&doc.text, at.position, self.encoding);
                         hover::hover(doc, pos, self.data.as_ref())
                     });
                     Response::new_ok(id, shown)
@@ -406,7 +436,8 @@ impl<'c> Server<'c> {
                         let at = params.text_document_position_params;
                         let found = self.documents.get(&at.text_document.uri).and_then(|doc| {
                             let pos =
-                                doc.index.position_to_byte(&doc.text, at.position, self.encoding);
+                                doc.index
+                                    .position_to_byte(&doc.text, at.position, self.encoding);
                             definition::definition(doc, pos, &self.index)
                         });
                         let found = found.map(|mut location| {
@@ -436,18 +467,21 @@ impl<'c> Server<'c> {
                 match serde_json::from_value::<DocumentFormattingParams>(request.params) {
                     Ok(params) => {
                         let indent = params.options.tab_size as usize;
-                        let edits = self.documents.get(&params.text_document.uri).and_then(|doc| {
-                            match format::format(&doc.text, indent, &mut self.parser) {
-                                FormatOutcome::Unchanged => Some(Vec::new()),
-                                FormatOutcome::Changed(new) => Some(format::line_edits(
-                                    &doc.text,
-                                    &doc.index,
-                                    &new,
-                                    self.encoding,
-                                )),
-                                FormatOutcome::Refused(_) => None,
-                            }
-                        });
+                        let edits = self
+                            .documents
+                            .get(&params.text_document.uri)
+                            .and_then(|doc| {
+                                match format::format(&doc.text, indent, &mut self.parser) {
+                                    FormatOutcome::Unchanged => Some(Vec::new()),
+                                    FormatOutcome::Changed(new) => Some(format::line_edits(
+                                        &doc.text,
+                                        &doc.index,
+                                        &new,
+                                        self.encoding,
+                                    )),
+                                    FormatOutcome::Refused(_) => None,
+                                }
+                            });
                         Response::new_ok(id, edits)
                     }
                     Err(error) => invalid(id, &error.to_string()),
@@ -479,7 +513,11 @@ impl<'c> Server<'c> {
         if !COMMANDS.contains(&command) {
             return self.reply(invalid(id, &format!("swara has no command {command}")));
         }
-        let uri = params.arguments.first().cloned().and_then(|uri| serde_json::from_value(uri).ok());
+        let uri = params
+            .arguments
+            .first()
+            .cloned()
+            .and_then(|uri| serde_json::from_value(uri).ok());
         let open = |uri: &Uri| self.documents.contains_key(uri) && file_uri::to_path(uri).is_some();
         let Some(uri) = uri.filter(open) else {
             return self.reply(invalid(id, "the first argument must name an open file"));
@@ -504,9 +542,11 @@ impl<'c> Server<'c> {
     fn notification(&mut self, notification: Notification) -> Result<()> {
         match notification.method.as_str() {
             DidOpenTextDocument::METHOD => {
-                let params: DidOpenTextDocumentParams = serde_json::from_value(notification.params)?;
+                let params: DidOpenTextDocumentParams =
+                    serde_json::from_value(notification.params)?;
                 let item = params.text_document;
-                let doc = Document::new(item.uri.clone(), item.version, item.text, &mut self.parser);
+                let doc =
+                    Document::new(item.uri.clone(), item.version, item.text, &mut self.parser);
                 let changed = index_update(&mut self.index, &doc);
                 self.documents.insert(item.uri.clone(), doc);
                 self.layers.insert(item.uri.clone(), Layers::default());
@@ -519,7 +559,9 @@ impl<'c> Server<'c> {
                 let params: DidChangeTextDocumentParams =
                     serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
-                let Some(doc) = self.documents.get_mut(&uri) else { return Ok(()) };
+                let Some(doc) = self.documents.get_mut(&uri) else {
+                    return Ok(());
+                };
                 let layers = self.layers.entry(uri.clone()).or_default();
                 // A running build read the old text, so its messages move with these edits too.
                 let mut build = self.builds.get_mut(&uri);
@@ -558,7 +600,8 @@ impl<'c> Server<'c> {
                 }
             }
             DidSaveTextDocument::METHOD => {
-                let params: DidSaveTextDocumentParams = serde_json::from_value(notification.params)?;
+                let params: DidSaveTextDocumentParams =
+                    serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
                 // Without a LilyPond there is nothing to build with, as the start said.
                 if checkable(&uri)
@@ -569,7 +612,8 @@ impl<'c> Server<'c> {
                 }
             }
             DidCloseTextDocument::METHOD => {
-                let params: DidCloseTextDocumentParams = serde_json::from_value(notification.params)?;
+                let params: DidCloseTextDocumentParams =
+                    serde_json::from_value(notification.params)?;
                 let uri = params.text_document.uri;
                 self.pauses.remove(&uri);
                 if let Some(check) = self.checks.remove(&uri) {
@@ -588,7 +632,9 @@ impl<'c> Server<'c> {
                 match file_uri::to_path(&uri) {
                     // Another open file's check may still have something to say about this one.
                     Some(path) => self.publish_path(&path)?,
-                    None => self.send_diagnostics(PublishDiagnosticsParams::new(uri, Vec::new(), None))?,
+                    None => {
+                        self.send_diagnostics(PublishDiagnosticsParams::new(uri, Vec::new(), None))?
+                    }
                 }
             }
             _ => {}
@@ -605,14 +651,18 @@ impl<'c> Server<'c> {
             }
             name => {
                 let name = name.unwrap_or("lilypond");
-                self.found_lilypond.get_or_insert_with(|| info::find_on_path(name)).clone()
+                self.found_lilypond
+                    .get_or_insert_with(|| info::find_on_path(name))
+                    .clone()
             }
         }
     }
 
     fn start_check(&mut self, uri: &Uri) -> Result<()> {
         // Without a LilyPond there is nothing to check with. The command data says why.
-        let Some(lilypond) = self.lilypond() else { return Ok(()) };
+        let Some(lilypond) = self.lilypond() else {
+            return Ok(());
+        };
         let (Some(doc), Some(path)) = (self.documents.get(uri), file_uri::to_path(uri)) else {
             return Ok(());
         };
@@ -621,7 +671,14 @@ impl<'c> Server<'c> {
         let started = spec.and_then(|spec| {
             let (uri, version, out_dir) = (spec.uri.clone(), spec.version, spec.out_dir.clone());
             match run::spawn(spec, self.results_sender.clone()) {
-                Ok(running) => Ok((uri, Check { running, out_dir, version })),
+                Ok(running) => Ok((
+                    uri,
+                    Check {
+                        running,
+                        out_dir,
+                        version,
+                    },
+                )),
                 Err(error) => {
                     let _ = fs::remove_dir_all(&out_dir);
                     Err(error)
@@ -634,7 +691,10 @@ impl<'c> Server<'c> {
             }
             Err(error) => {
                 let message = format!("LilyPond could not be started: {error}");
-                self.layers.entry(uri.clone()).or_default().set_check(vec![notice(message)]);
+                self.layers
+                    .entry(uri.clone())
+                    .or_default()
+                    .set_check(vec![notice(message)]);
                 self.publish(uri)?;
             }
         }
@@ -644,7 +704,11 @@ impl<'c> Server<'c> {
     /// The configured include folders, a relative one taken from the folder of `path`.
     fn include_paths(&self, path: &Path) -> Vec<PathBuf> {
         let dir = path.parent().unwrap_or(Path::new("/"));
-        self.config.include_paths.iter().map(|p| dir.join(p)).collect()
+        self.config
+            .include_paths
+            .iter()
+            .map(|p| dir.join(p))
+            .collect()
     }
 
     /// Builds an open file: the file on disk after a save, or with `unsaved` its open text. A
@@ -666,14 +730,25 @@ impl<'c> Server<'c> {
         match run::spawn(spec, self.results_sender.clone()) {
             Ok(running) => {
                 let edits = Some(Vec::new());
-                let build = Build { running, out_dir, path, started, text, index, edits };
+                let build = Build {
+                    running,
+                    out_dir,
+                    path,
+                    started,
+                    text,
+                    index,
+                    edits,
+                };
                 self.builds.insert(uri.clone(), build);
                 Ok(())
             }
             Err(error) => {
                 let _ = fs::remove_dir_all(&out_dir);
                 let message = format!("LilyPond could not be started: {error}");
-                self.layers.entry(uri.clone()).or_default().set_build(vec![notice(message)]);
+                self.layers
+                    .entry(uri.clone())
+                    .or_default()
+                    .set_build(vec![notice(message)]);
                 self.set_included(uri, RunKind::Build, HashMap::new())?;
                 self.publish(uri)?;
                 self.send_finished(uri, Outputs::default(), false, started)
@@ -687,7 +762,10 @@ impl<'c> Server<'c> {
         if let Some(old) = self.previews.remove(uri) {
             old.running.stop();
             let _ = fs::remove_dir_all(&old.out_dir);
-            self.reply(failed(old.request, "a newer preview replaced this one".into()))?;
+            self.reply(failed(
+                old.request,
+                "a newer preview replaced this one".into(),
+            ))?;
         }
         let (Some(doc), Some(path)) = (self.documents.get(uri), file_uri::to_path(uri)) else {
             return self.reply(invalid(id, "the first argument must name an open file"));
@@ -697,18 +775,31 @@ impl<'c> Server<'c> {
             build::preview_spec(uri, lilypond, &path, &doc.text, doc.version, &includes, dpi);
         let spec = match spec {
             Ok(spec) => spec,
-            Err(error) => return self.reply(failed(id, format!("no folder for the preview: {error}"))),
+            Err(error) => {
+                return self.reply(failed(id, format!("no folder for the preview: {error}")));
+            }
         };
         let out_dir = spec.out_dir.clone();
         let png = build::preview_png(&out_dir, &path);
         match run::spawn(spec, self.results_sender.clone()) {
             Ok(running) => {
-                self.previews.insert(uri.clone(), Preview { running, out_dir, png, request: id });
+                self.previews.insert(
+                    uri.clone(),
+                    Preview {
+                        running,
+                        out_dir,
+                        png,
+                        request: id,
+                    },
+                );
                 Ok(())
             }
             Err(error) => {
                 let _ = fs::remove_dir_all(&out_dir);
-                self.reply(failed(id, format!("LilyPond could not be started: {error}")))
+                self.reply(failed(
+                    id,
+                    format!("LilyPond could not be started: {error}"),
+                ))
             }
         }
     }
@@ -731,7 +822,9 @@ impl<'c> Server<'c> {
     }
 
     fn check_finished(&mut self, uri: Uri, result: RunResult) -> Result<()> {
-        let Some(check) = self.checks.remove(&uri) else { return Ok(()) };
+        let Some(check) = self.checks.remove(&uri) else {
+            return Ok(());
+        };
         let version = check.version;
         // Its standard error has closed, but whatever it started may still be running.
         check.stop();
@@ -752,15 +845,28 @@ impl<'c> Server<'c> {
     /// Moves what a build wrote beside its source, shows what it said, and tells the plugin. Its
     /// messages are placed in the text it read, then moved through every edit made since.
     fn build_finished(&mut self, uri: Uri, result: RunResult) -> Result<()> {
-        let Some(build) = self.builds.remove(&uri) else { return Ok(()) };
-        let Build { running, out_dir, path, started, text, index, edits, .. } = build;
+        let Some(build) = self.builds.remove(&uri) else {
+            return Ok(());
+        };
+        let Build {
+            running,
+            out_dir,
+            path,
+            started,
+            text,
+            index,
+            edits,
+            ..
+        } = build;
         let status = running.stop();
         let dir = path.parent().unwrap_or(Path::new("/"));
         let outputs = build::move_outputs(&out_dir, dir, &path);
         if self.documents.contains_key(&uri) {
             let (mut own, others) = place(&result.stderr, &path, &text, &index, self.encoding);
             match edits {
-                Some(edits) => edits.iter().for_each(|edit| diagnostics::shift_all(&mut own, edit)),
+                Some(edits) => edits
+                    .iter()
+                    .for_each(|edit| diagnostics::shift_all(&mut own, edit)),
                 None => own.clear(),
             }
             if let Some(layers) = self.layers.get_mut(&uri) {
@@ -775,7 +881,9 @@ impl<'c> Server<'c> {
 
     /// Answers a preview with its image, and lets go of the image it answered with before.
     fn preview_finished(&mut self, uri: Uri) -> Result<()> {
-        let Some(preview) = self.previews.remove(&uri) else { return Ok(()) };
+        let Some(preview) = self.previews.remove(&uri) else {
+            return Ok(());
+        };
         preview.running.stop();
         if !preview.png.is_file() {
             let _ = fs::remove_dir_all(&preview.out_dir);
@@ -789,7 +897,13 @@ impl<'c> Server<'c> {
         self.reply(Response::new_ok(preview.request, json!({ "png": png })))
     }
 
-    fn send_finished(&self, uri: &Uri, outputs: Outputs, success: bool, started: Instant) -> Result<()> {
+    fn send_finished(
+        &self,
+        uri: &Uri,
+        outputs: Outputs,
+        success: bool,
+        started: Instant,
+    ) -> Result<()> {
         let text = |path: Option<PathBuf>| path.map(|path| path.to_string_lossy().into_owned());
         let params = BuildFinished {
             uri: uri.clone(),
@@ -798,12 +912,16 @@ impl<'c> Server<'c> {
             success,
             duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         };
-        self.connection.sender.send(Notification::new(build::FINISHED.into(), params).into())?;
+        self.connection
+            .sender
+            .send(Notification::new(build::FINISHED.into(), params).into())?;
         Ok(())
     }
 
     fn time_out(&mut self, uri: &Uri) -> Result<()> {
-        let Some(check) = self.checks.remove(uri) else { return Ok(()) };
+        let Some(check) = self.checks.remove(uri) else {
+            return Ok(());
+        };
         check.stop();
         let seconds = run::check_timeout().as_secs_f64();
         let message = format!("LilyPond check took longer than {seconds} s and was stopped");
@@ -815,7 +933,9 @@ impl<'c> Server<'c> {
     }
 
     fn time_out_build(&mut self, uri: &Uri) -> Result<()> {
-        let Some(build) = self.builds.remove(uri) else { return Ok(()) };
+        let Some(build) = self.builds.remove(uri) else {
+            return Ok(());
+        };
         let started = build.started;
         build.stop();
         let seconds = run::build_timeout().as_secs_f64();
@@ -829,7 +949,9 @@ impl<'c> Server<'c> {
     }
 
     fn time_out_preview(&mut self, uri: &Uri) -> Result<()> {
-        let Some(preview) = self.previews.remove(uri) else { return Ok(()) };
+        let Some(preview) = self.previews.remove(uri) else {
+            return Ok(());
+        };
         preview.running.stop();
         let _ = fs::remove_dir_all(&preview.out_dir);
         let seconds = run::build_timeout().as_secs_f64();
@@ -863,7 +985,12 @@ impl<'c> Server<'c> {
     /// a check and a build of the same file report its parse errors alike.
     fn included_for(&self, path: &Path) -> Vec<Diagnostic> {
         let mut found: Vec<Diagnostic> = Vec::new();
-        for diagnostic in self.included.values().filter_map(|files| files.get(path)).flatten() {
+        for diagnostic in self
+            .included
+            .values()
+            .filter_map(|files| files.get(path))
+            .flatten()
+        {
             if !found.contains(diagnostic) {
                 found.push(diagnostic.clone());
             }
@@ -900,15 +1027,30 @@ impl<'c> Server<'c> {
             return Ok(());
         };
         let mut instant = syntax::syntax_errors(doc, Encoding::Utf8);
-        instant.extend(names::name_checks(doc, self.data.as_ref(), &self.index, Encoding::Utf8));
-        instant.extend(includes::include_checks(doc, self.data.as_ref(), &self.index, Encoding::Utf8));
+        instant.extend(names::name_checks(
+            doc,
+            self.data.as_ref(),
+            &self.index,
+            Encoding::Utf8,
+        ));
+        instant.extend(includes::include_checks(
+            doc,
+            self.data.as_ref(),
+            &self.index,
+            Encoding::Utf8,
+        ));
         layers.instant = instant;
         self.publish(uri)
     }
 
     /// Refreshes every open file but `except`.
     fn refresh_open(&mut self, except: Option<&Uri>) -> Result<()> {
-        let uris: Vec<Uri> = self.documents.keys().filter(|u| Some(*u) != except).cloned().collect();
+        let uris: Vec<Uri> = self
+            .documents
+            .keys()
+            .filter(|u| Some(*u) != except)
+            .cloned()
+            .collect();
         for uri in &uris {
             self.refresh(uri)?;
         }
@@ -925,17 +1067,30 @@ impl<'c> Server<'c> {
         if let Some(path) = file_uri::to_path(uri) {
             merged.extend(self.included_for(&path));
         }
-        self.send_diagnostics(PublishDiagnosticsParams::new(doc.uri.clone(), merged, Some(doc.version)))
+        self.send_diagnostics(PublishDiagnosticsParams::new(
+            doc.uri.clone(),
+            merged,
+            Some(doc.version),
+        ))
     }
 
     /// Publishes the diagnostics of a file by its path, whether it is open or not.
     fn publish_path(&self, path: &Path) -> Result<()> {
-        let open = self.documents.keys().find(|uri| file_uri::to_path(uri).as_deref() == Some(path));
+        let open = self
+            .documents
+            .keys()
+            .find(|uri| file_uri::to_path(uri).as_deref() == Some(path));
         if let Some(uri) = open {
             return self.publish(uri);
         }
-        let Some(uri) = file_uri::from_path(path) else { return Ok(()) };
-        self.send_diagnostics(PublishDiagnosticsParams::new(uri, self.included_for(path), None))
+        let Some(uri) = file_uri::from_path(path) else {
+            return Ok(());
+        };
+        self.send_diagnostics(PublishDiagnosticsParams::new(
+            uri,
+            self.included_for(path),
+            None,
+        ))
     }
 
     fn send_diagnostics(&self, params: PublishDiagnosticsParams) -> Result<()> {
@@ -947,14 +1102,18 @@ impl<'c> Server<'c> {
     /// A message the editor puts in front of the user.
     fn show(&self, typ: MessageType, message: String) -> Result<()> {
         let params = ShowMessageParams { typ, message };
-        self.connection.sender.send(Notification::new(ShowMessage::METHOD.into(), params).into())?;
+        self.connection
+            .sender
+            .send(Notification::new(ShowMessage::METHOD.into(), params).into())?;
         Ok(())
     }
 
     /// A message for the editor's log, which the user reads only when looking for it.
     fn log(&self, typ: MessageType, message: String) -> Result<()> {
         let params = LogMessageParams { typ, message };
-        self.connection.sender.send(Notification::new(LogMessage::METHOD.into(), params).into())?;
+        self.connection
+            .sender
+            .send(Notification::new(LogMessage::METHOD.into(), params).into())?;
         Ok(())
     }
 }
@@ -1018,7 +1177,9 @@ fn owner<'a, T: 'a>(
     id: u64,
     running: fn(&T) -> &Running,
 ) -> Option<Uri> {
-    runs.into_iter().find(|(_, run)| running(run).id == id).map(|(uri, _)| uri.clone())
+    runs.into_iter()
+        .find(|(_, run)| running(run).id == id)
+        .map(|(uri, _)| uri.clone())
 }
 
 /// The open files whose runs have passed their deadlines.
@@ -1027,7 +1188,9 @@ fn late<'a, T: 'a>(
     now: Instant,
     running: fn(&T) -> &Running,
 ) -> Vec<Uri> {
-    let late = runs.into_iter().filter(|(_, run)| running(run).deadline <= now);
+    let late = runs
+        .into_iter()
+        .filter(|(_, run)| running(run).deadline <= now);
     late.map(|(uri, _)| uri.clone()).collect()
 }
 
@@ -1066,7 +1229,13 @@ fn failed(id: RequestId, message: String) -> Response {
 fn debug_tree(doc: &Document) -> Value {
     fn dump(node: Node, out: &mut String) {
         let missing = if node.is_missing() { " MISSING" } else { "" };
-        let _ = write!(out, "({}{missing} {}-{}", node.kind(), node.start_byte(), node.end_byte());
+        let _ = write!(
+            out,
+            "({}{missing} {}-{}",
+            node.kind(),
+            node.start_byte(),
+            node.end_byte()
+        );
         for child in node.children(&mut node.walk()) {
             out.push(' ');
             dump(child, out);
