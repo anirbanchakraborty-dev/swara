@@ -52,7 +52,12 @@ pub struct Lilypond {
 impl Lilypond {
     /// The first `lilypond` on `PATH` that runs and reports a version.
     pub fn find() -> Option<Lilypond> {
-        let path = find_on_path("lilypond")?.canonicalize().ok()?;
+        Self::at(&find_on_path("lilypond")?)
+    }
+
+    /// The LilyPond at `path`, when it runs and reports a version.
+    pub fn at(path: &Path) -> Option<Lilypond> {
+        let path = path.canonicalize().ok()?;
         let version = version_of(&path)?;
         Some(Lilypond { path, version })
     }

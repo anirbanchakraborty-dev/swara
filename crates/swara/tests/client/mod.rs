@@ -50,6 +50,8 @@ pub struct TestClient {
     messages: Receiver<(Instant, Message)>,
     /// Notifications that arrived while the client waited for something else.
     pending: VecDeque<(Instant, Notification)>,
+    /// Every notification a wait has taken, whatever it was waiting for.
+    seen: Vec<Notification>,
     next_id: i32,
     last_sent: Instant,
     pub initialize_result: InitializeResult,
@@ -72,9 +74,13 @@ impl TestClient {
     }
 
     fn start(init_options: Value, encodings: &[&'static str], env: &[(&str, &str)]) -> Self {
+        // One cache for every test, so the real LilyPond's command data is dumped once per build
+        // folder and the tests never write to the user's own cache.
+        let cache = concat!(env!("CARGO_TARGET_TMPDIR"), "/swara-cache");
         let mut child = Command::new(env!("CARGO_BIN_EXE_swara"))
             .arg("lsp")
             .env("SWARA_TEST", "1")
+            .env("SWARA_TEST_CACHE_DIR", cache)
             .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -95,6 +101,7 @@ impl TestClient {
             stdin,
             messages,
             pending: VecDeque::new(),
+            seen: Vec::new(),
             next_id: 0,
             last_sent: Instant::now(),
             initialize_result: InitializeResult::default(),
@@ -200,6 +207,13 @@ impl TestClient {
         publishes
     }
 
+    /// The parameters of every `method` notification so far, after waiting `settle` for more.
+    pub fn notifications(&mut self, method: &str, settle: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + settle;
+        while self.next_notification(deadline).is_some() {}
+        self.seen.iter().filter(|n| n.method == method).map(|n| n.params.clone()).collect()
+    }
+
     fn send(&mut self, message: Message) {
         message.write(&mut self.stdin).expect("write to swara");
         self.last_sent = Instant::now();
@@ -207,11 +221,15 @@ impl TestClient {
 
     fn next_notification(&mut self, deadline: Instant) -> Option<(Instant, Notification)> {
         if let Some(pending) = self.pending.pop_front() {
+            self.seen.push(pending.1.clone());
             return Some(pending);
         }
         loop {
             match self.next_message(deadline)? {
-                (arrived, Message::Notification(n)) => return Some((arrived, n)),
+                (arrived, Message::Notification(n)) => {
+                    self.seen.push(n.clone());
+                    return Some((arrived, n));
+                }
                 (_, Message::Request(r)) => self.answer(r),
                 (_, Message::Response(_)) => {}
             }

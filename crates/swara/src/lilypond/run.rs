@@ -84,18 +84,24 @@ impl Running {
     /// Stops the run and everything it started, then reaps it. Safe to call on a run that has
     /// already exited.
     pub fn stop(mut self) -> Option<ExitStatus> {
-        #[cfg(unix)]
-        {
-            // The child leads its own group, so the group has the child's id. Until `wait` reaps
-            // the child, that id cannot belong to anything else.
-            let group = self.child.id() as libc::pid_t;
-            // SAFETY: killpg only sends a signal, and takes no pointers.
-            unsafe { libc::killpg(group, libc::SIGKILL) };
-        }
-        #[cfg(not(unix))]
-        let _ = self.child.kill();
-        self.child.wait().ok()
+        kill_group(&mut self.child)
     }
+}
+
+/// Stops a child that leads its own group, and everything it started, then reaps it. Safe to call
+/// on a child that has already exited.
+pub fn kill_group(child: &mut Child) -> Option<ExitStatus> {
+    #[cfg(unix)]
+    {
+        // The child leads its own group, so the group has the child's id. Until `wait` reaps the
+        // child, that id cannot belong to anything else.
+        let group = child.id() as libc::pid_t;
+        // SAFETY: killpg only sends a signal, and takes no pointers.
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = child.kill();
+    child.wait().ok()
 }
 
 /// The check of one version of a file, with its text on standard input. The arguments are the
@@ -197,7 +203,7 @@ pub fn remove_work_dir() {
 /// The folder for this server's settings file and run output, one per process. A cleaner can
 /// empty the temporary folder under a server that runs for days, so this looks each time, and
 /// makes a new folder when the old one is gone or no longer private.
-fn work_dir() -> io::Result<PathBuf> {
+pub(crate) fn work_dir() -> io::Result<PathBuf> {
     let mut current = WORK_DIR.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(dir) = current.as_ref().filter(|dir| is_private(dir)) {
         return Ok(dir.clone());

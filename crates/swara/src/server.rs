@@ -7,13 +7,14 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::thread;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, Sender, at, never, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit,
-    Notification as _, PublishDiagnostics,
+    DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, Exit, LogMessage,
+    Notification as _, PublishDiagnostics, ShowMessage,
 };
 use lsp_types::request::{
     Completion, DocumentSymbolRequest, ExecuteCommand, Formatting, GotoDefinition, HoverRequest,
@@ -22,8 +23,9 @@ use lsp_types::request::{
 use lsp_types::{
     CompletionOptions, Diagnostic, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandOptions,
-    HoverProviderCapability, InitializeParams, InitializeResult, OneOf, PositionEncodingKind,
-    PublishDiagnosticsParams, SaveOptions, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
+    HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
+    OneOf, PositionEncodingKind, PublishDiagnosticsParams, SaveOptions, ServerCapabilities,
+    ServerInfo, ShowMessageParams, TextDocumentIdentifier,
     TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncOptions,
     TextDocumentSyncSaveOptions, Uri,
 };
@@ -31,6 +33,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tree_sitter::{Node, Parser};
 
+use crate::commanddata::{self, CommandData};
 use crate::diagnostics::{self, Layers, syntax};
 use crate::document::Document;
 use crate::file_uri;
@@ -139,6 +142,10 @@ fn capabilities(encoding: Encoding) -> ServerCapabilities {
     }
 }
 
+/// Shown once at start when there is no LilyPond to run. Everything else still works.
+const NOT_FOUND: &str =
+    "LilyPond not found: the LilyPond check, builds, preview and playback are off";
+
 /// A LilyPond check in progress for one version of an open file.
 struct Check {
     running: Running,
@@ -170,6 +177,10 @@ struct Server<'c> {
     included: HashMap<Uri, HashMap<PathBuf, Vec<Diagnostic>>>,
     /// The `lilypond` on `PATH`, looked up the first time a check needs it.
     found_lilypond: Option<Option<PathBuf>>,
+    /// What the installed LilyPond defines, once it has loaded.
+    data: Option<CommandData>,
+    /// The command data from its loading thread, until it arrives.
+    data_results: Receiver<std::result::Result<CommandData, String>>,
     /// `SWARA_TEST=1` turns on requests that only the tests use.
     test_mode: bool,
 }
@@ -194,6 +205,8 @@ impl<'c> Server<'c> {
             checks: HashMap::new(),
             included: HashMap::new(),
             found_lilypond: None,
+            data: None,
+            data_results: never(),
             test_mode: std::env::var_os("SWARA_TEST").is_some_and(|v| v == "1"),
         }
     }
@@ -201,8 +214,10 @@ impl<'c> Server<'c> {
     fn main_loop(&mut self) -> Result<()> {
         let connection = self.connection;
         let results = self.results.clone();
+        self.load_command_data()?;
         loop {
             let deadline = self.next_deadline().map_or_else(never, at);
+            let data_results = self.data_results.clone();
             select! {
                 recv(connection.receiver) -> message => {
                     // The client went away without saying goodbye.
@@ -226,10 +241,37 @@ impl<'c> Server<'c> {
                         self.finished(result)?;
                     }
                 }
+                recv(data_results) -> loaded => {
+                    // There is one answer at most, or none when the thread went away.
+                    self.data_results = never();
+                    match loaded {
+                        Ok(Ok(data)) => self.data = Some(data),
+                        Ok(Err(error)) => {
+                            let message =
+                                format!("LilyPond's command data could not be read: {error}");
+                            self.log(MessageType::WARNING, message)?;
+                        }
+                        Err(_) => {}
+                    }
+                }
                 recv(deadline) -> _ => {}
             }
             self.fire_due()?;
         }
+    }
+
+    /// Loads LilyPond's command data on a thread of its own, since a dump takes a moment, or says
+    /// once that there is no LilyPond.
+    fn load_command_data(&mut self) -> Result<()> {
+        let Some(lilypond) = self.lilypond() else {
+            return self.show(MessageType::WARNING, NOT_FOUND.into());
+        };
+        let (sender, receiver) = crossbeam_channel::bounded(1);
+        thread::spawn(move || {
+            let _ = sender.send(commanddata::load(&lilypond));
+        });
+        self.data_results = receiver;
+        Ok(())
     }
 
     /// When the loop next has something to do without being asked: a check whose pause is over,
@@ -270,6 +312,9 @@ impl<'c> Server<'c> {
                     },
                     Err(error) => invalid(id, &error.to_string()),
                 }
+            }
+            "swara/debugCommandData" if self.test_mode => {
+                Response::new_ok(id, self.data.as_ref().map(CommandData::summary))
             }
             Completion::METHOD
             | HoverRequest::METHOD
@@ -344,12 +389,18 @@ impl<'c> Server<'c> {
         Ok(())
     }
 
-    /// The `lilypond` to run: the configured one, or the one on `PATH`.
+    /// The `lilypond` to run: the configured one, or the one on `PATH`. A configured path has to
+    /// lead to a file, and a configured bare name is looked up on `PATH`.
     fn lilypond(&mut self) -> Option<PathBuf> {
-        if let Some(path) = &self.config.lilypond {
-            return Some(PathBuf::from(path));
+        match self.config.lilypond.as_deref() {
+            Some(path) if path.contains(std::path::is_separator) => {
+                Some(PathBuf::from(path)).filter(|path| path.is_file())
+            }
+            name => {
+                let name = name.unwrap_or("lilypond");
+                self.found_lilypond.get_or_insert_with(|| info::find_on_path(name)).clone()
+            }
         }
-        self.found_lilypond.get_or_insert_with(|| info::find_on_path("lilypond")).clone()
     }
 
     fn start_check(&mut self, uri: &Uri) -> Result<()> {
@@ -499,6 +550,20 @@ impl<'c> Server<'c> {
         self.connection.sender.send(notification.into())?;
         Ok(())
     }
+
+    /// A message the editor puts in front of the user.
+    fn show(&self, typ: MessageType, message: String) -> Result<()> {
+        let params = ShowMessageParams { typ, message };
+        self.connection.sender.send(Notification::new(ShowMessage::METHOD.into(), params).into())?;
+        Ok(())
+    }
+
+    /// A message for the editor's log, which the user reads only when looking for it.
+    fn log(&self, typ: MessageType, message: String) -> Result<()> {
+        let params = LogMessageParams { typ, message };
+        self.connection.sender.send(Notification::new(LogMessage::METHOD.into(), params).into())?;
+        Ok(())
+    }
 }
 
 impl Drop for Server<'_> {
@@ -507,6 +572,8 @@ impl Drop for Server<'_> {
         for (_, check) in self.checks.drain() {
             check.stop();
         }
+        // Before the work folder goes, so that no dump starts in it, or is left running in it.
+        commanddata::stop_dump();
         run::remove_work_dir();
     }
 }

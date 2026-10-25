@@ -1,0 +1,51 @@
+{"k":"meta","format":1,"lilypond":"2.26.0","datadir":"/usr/share/lilypond/2.26.0"}
+{"k":"music-function","name":"relative","args":[{"pred":"ly:pitch?","optional":true},{"pred":"ly:music?","optional":false}],"doc":"Notes in the music take their octave from the note before."}
+{"k":"music-function","name":"transpose","args":[{"pred":"ly:pitch?","optional":false},{"pred":"ly:pitch?","optional":false},{"pred":"ly:music?","optional":false}],"doc":"Moves the music by the interval between two pitches."}
+{"k":"music-function","name":"clef","args":[{"pred":"string?","optional":false}],"doc":"Sets the clef by name."}
+{"k":"music-function","name":"key","args":[{"pred":"ly:pitch?","optional":true},{"pred":"number-pair-list?","optional":true}],"doc":"Sets the key from a tonic and a scale."}
+{"k":"music-function","name":"tuplet","args":[{"pred":"fraction?","optional":false},{"pred":"ly:duration?","optional":true},{"pred":"ly:music?","optional":false}],"doc":"Scales the durations of the music by a fraction."}
+{"k":"music-function","name":"once","args":[{"pred":"ly:music?","optional":false}],"doc":"Applies a setting for one moment only."}
+{"k":"music-function","name":"omit","args":[{"pred":"symbol-list-or-music?","optional":false}],"doc":"Hides a grob without leaving space for it."}
+{"k":"music-function","name":"language","args":[{"pred":"string?","optional":false}],"doc":"Chooses the language for note names."}
+{"k":"markup","name":"bold","args":[{"pred":"markup?","optional":false}],"doc":"Heavy type."}
+{"k":"markup","name":"italic","args":[{"pred":"markup?","optional":false}],"doc":"Slanted type."}
+{"k":"markup","name":"fontsize","args":[{"pred":"number?","optional":false},{"pred":"cheap-markup?","optional":false}],"doc":"Grows or shrinks the type by steps."}
+{"k":"markup","name":"with-color","args":[{"pred":"color?","optional":false},{"pred":"cheap-markup?","optional":false}],"doc":"Draws the markup in a colour."}
+{"k":"markup","name":"column","args":[{"pred":"markup-list?","optional":false}],"doc":"Stacks markups one above the next."}
+{"k":"markup-list","name":"wordwrap-lines","args":[{"pred":"markup-list?","optional":false}],"doc":"Fills lines with words and breaks between them."}
+{"k":"identifier","name":"fermata","kind":"music"}
+{"k":"identifier","name":"f","kind":"music"}
+{"k":"identifier","name":"major","kind":"scheme"}
+{"k":"identifier","name":"up","kind":"number"}
+{"k":"identifier","name":"default-language","kind":"string"}
+{"k":"identifier","name":"whiteTriangleMarkup","kind":"markup"}
+{"k":"identifier","name":"RemoveEmptyStaves","kind":"context-def"}
+{"k":"grob","name":"NoteHead","interfaces":["grob-interface","note-head-interface"],"doc":"The head of a note."}
+{"k":"grob","name":"Stem","interfaces":["grob-interface","stem-interface"],"doc":"The line from a note head."}
+{"k":"grob","name":"StaffSymbol","interfaces":["grob-interface"],"doc":"The five lines."}
+{"k":"interface","name":"grob-interface","props":["color","transparent"],"doc":"What every grob has."}
+{"k":"interface","name":"note-head-interface","props":["style"],"doc":"What note heads have."}
+{"k":"interface","name":"stem-interface","props":["direction","length"],"doc":"What stems have."}
+{"k":"property","name":"color","scope":"backend","pred":"color?","doc":"The colour to draw in."}
+{"k":"property","name":"transparent","scope":"backend","pred":"boolean?","doc":"Leaves space but draws nothing."}
+{"k":"property","name":"style","scope":"backend","pred":"symbol?","doc":"Which shape to draw."}
+{"k":"property","name":"direction","scope":"backend","pred":"ly:dir?","doc":"Up or down."}
+{"k":"property","name":"length","scope":"backend","pred":"ly:dimension?","doc":"How long, in staff spaces."}
+{"k":"property","name":"instrumentName","scope":"context","pred":"cheap-markup?","doc":"The name at the start of the staff."}
+{"k":"property","name":"autoBeaming","scope":"context","pred":"boolean?","doc":"Beams notes without being asked."}
+{"k":"property","name":"color","scope":"context","pred":"color?","doc":"A context property that shares a backend name."}
+{"k":"context","name":"Score","doc":"The whole piece."}
+{"k":"context","name":"Staff","doc":"One staff."}
+{"k":"context","name":"Voice","doc":"One line of notes."}
+{"k":"context","name":"DrumStaff","doc":"A staff for drums."}
+{"k":"translator","name":"Note_heads_engraver","doc":"Draws note heads."}
+{"k":"translator","name":"Clef_engraver","doc":"Draws clefs."}
+{"k":"music-type","name":"NoteEvent"}
+{"k":"music-type","name":"SequentialMusic"}
+{"k":"event-class","name":"note-event"}
+{"k":"event-class","name":"music-event"}
+{"k":"language","name":"nederlands","pitches":["c","cis","d","es","e","f","fis","g","as","a","bes","b"]}
+{"k":"language","name":"english","pitches":["c","cs","d","ef","e","f","fs","g","af","a","bf","b"]}
+{"k":"drums","names":["bd","sn","hh"]}
+{"k":"future-record","name":"ignored by this version"}
+{"k":"end"}
