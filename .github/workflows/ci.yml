@@ -12,7 +12,7 @@ env:
   RUST_VERSION: 1.98.0
   LILYPOND_VERSION: 2.26.0
   # Swara builds against the grammar in a folder beside its own, at the commit it was tested with.
-  GRAMMAR_REV: 2fce2fefb3989aad440cb143b63848f385154940
+  GRAMMAR_REV: 3e50865ce45f2684bf8db5e3731818dbbaebc1d1
 
 jobs:
   test:
