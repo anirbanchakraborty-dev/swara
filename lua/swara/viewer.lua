@@ -11,7 +11,7 @@ local shown = {}
 local warned = false
 
 -- The two preferences that make Skim reload a changed PDF by itself. Skim ships with both off.
-local WATCH = { 'SKAutoCheckFileUpdate', 'SKAutoReloadFileUpdate' }
+M.WATCH = { 'SKAutoCheckFileUpdate', 'SKAutoReloadFileUpdate' }
 
 -- Has Skim reload the document open at the path given as the script's argument. It names the
 -- document by its path because `document 1` is whichever PDF is in front, and the `running` test
@@ -24,7 +24,7 @@ local function on_mac()
 end
 
 --- Whether Skim is installed in either folder macOS keeps applications in.
-local function has_skim()
+function M.has_skim()
   for _, dir in ipairs({ '/Applications', vim.fs.normalize('~/Applications') }) do
     if vim.fn.isdirectory(dir .. '/Skim.app') == 1 then
       return true
@@ -36,8 +36,8 @@ end
 --- Calls `done(true)` when both watch preferences read 1, and `done(false)` otherwise. An unset
 --- preference makes `defaults` exit 1, and means Skim's shipped value, which is off.
 local function skim_watches(done)
-  local on, left = {}, #WATCH
-  for i, key in ipairs(WATCH) do
+  local on, left = {}, #M.WATCH
+  for i, key in ipairs(M.WATCH) do
     vim.system({ 'defaults', 'read', '-app', 'Skim', key }, { text = true }, function(result)
       on[i] = result.code == 0 and vim.trim(result.stdout) == '1'
       left = left - 1
@@ -90,12 +90,12 @@ function M.built(_, params)
     shown[pdf] = true
     if not on_mac() then
       ui_open(pdf)
-    elseif has_skim() then
+    elseif M.has_skim() then
       vim.system({ 'open', '-g', '-a', 'Skim', pdf })
     else
       vim.system({ 'open', '-g', pdf })
     end
-  elseif on_mac() and has_skim() then
+  elseif on_mac() and M.has_skim() then
     skim_watches(function(watching)
       if not watching then
         revert(pdf)
@@ -112,7 +112,7 @@ function M.open(buf)
     return
   end
   shown[pdf] = true
-  if on_mac() and has_skim() then
+  if on_mac() and M.has_skim() then
     vim.system({ 'open', '-a', 'Skim', pdf })
   else
     ui_open(pdf)

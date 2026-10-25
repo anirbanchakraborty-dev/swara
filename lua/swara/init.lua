@@ -8,10 +8,11 @@ function M.setup(opts)
   require('swara.config').setup(opts)
 end
 
---- Called for each buffer whose filetype becomes `lilypond`. Once the `swara` program is found,
---- which may mean a download, the buffer gets colours, the server and tidy on save. A buffer
---- opened while the download runs waits for it with the others.
+--- Called for each buffer whose filetype becomes `lilypond`. The buffer gets Swara's keys at once.
+--- Once the `swara` program is found, which may mean a download, it gets colours, the server and
+--- tidy on save. A buffer opened while the download runs waits for it with the others.
 function M.attach(buf)
+  require('swara.keys').attach(buf)
   require('swara.binary').resolve(function(bin)
     -- A failed search has already said why, once.
     if not bin or not vim.api.nvim_buf_is_valid(buf) or vim.bo[buf].filetype ~= 'lilypond' then

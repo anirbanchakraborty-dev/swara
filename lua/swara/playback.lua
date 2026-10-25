@@ -254,7 +254,7 @@ function launch(soundfont, tries)
 end
 
 --- The soundfont to play with, or nil and the reason there is none.
-local function soundfont()
+function M.soundfont()
   local chosen = config.get().soundfont
   if chosen then
     local path = vim.fs.normalize(chosen)
@@ -277,7 +277,7 @@ function M.play(buf)
     vim.notify('Swara: build the file first (save it)', vim.log.levels.INFO)
     return
   end
-  local font, reason = soundfont()
+  local font, reason = M.soundfont()
   if not font then
     return warn(reason)
   end

@@ -10,6 +10,25 @@ local function warn(message)
   vim.notify(message, vim.log.levels.WARN)
 end
 
+--- Where MuseScore is: MuseScore 4's application on macOS, and elsewhere the first MuseScore
+--- program on `PATH`. Nil when it is not there.
+function M.find()
+  if vim.fn.has('mac') == 1 then
+    for _, dir in ipairs({ '/Applications', vim.fs.normalize('~/Applications') }) do
+      if vim.fn.isdirectory(dir .. '/MuseScore 4.app') == 1 then
+        return dir .. '/MuseScore 4.app'
+      end
+    end
+    return nil
+  end
+  for _, name in ipairs(PROGRAMS) do
+    if vim.fn.executable(name) == 1 then
+      return vim.fn.exepath(name)
+    end
+  end
+  return nil
+end
+
 --- Opens the MIDI file of `buf`'s last build in MuseScore 4 on macOS, and elsewhere in the first
 --- MuseScore program found on `PATH`.
 function M.open(buf)

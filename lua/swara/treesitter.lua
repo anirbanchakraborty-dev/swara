@@ -19,25 +19,33 @@ local function refuse(message)
   vim.notify(message, vim.log.levels.WARN)
 end
 
---- Loads the grammar `info` names, once, and says whether the language `lilypond` is Swara's.
-local function load(info)
-  if state ~= nil then
-    return state == true
-  end
+--- Loads the grammar `info` names as the language `lilypond`. Returns true when that language is
+--- Swara's grammar, and otherwise false with why it is not. `:checkhealth swara` asks this too.
+function M.check(info)
   -- `add` keeps a language already registered under the name, such as another plugin's grammar.
   local ok, added, err = pcall(vim.treesitter.language.add, 'lilypond', {
     path = info.grammar,
     symbol_name = info.grammar_symbol,
   })
   if not ok or not added then
-    refuse(
-      ('Swara: could not load its LilyPond grammar (%s); see :checkhealth swara'):format(reason(ok and err or added))
-    )
-    return false
+    return false, ('could not load its LilyPond grammar (%s)'):format(reason(ok and err or added))
   end
   local symbols = vim.treesitter.language.inspect('lilypond').symbols
   if symbols.embedded_lilypond ~= true then
-    refuse('Swara: another LilyPond grammar is already loaded, so Swara leaves colours off; see :checkhealth swara')
+    return false, 'another LilyPond grammar is already loaded'
+  end
+  return true
+end
+
+--- Loads the grammar `info` names, once, and says whether the language `lilypond` is Swara's.
+local function load(info)
+  if state ~= nil then
+    return state == true
+  end
+  local ok, why = M.check(info)
+  if not ok then
+    local after = why:find('^another') and ', so Swara leaves colours off' or ''
+    refuse(('Swara: %s%s; see :checkhealth swara'):format(why, after))
     return false
   end
   state = true
