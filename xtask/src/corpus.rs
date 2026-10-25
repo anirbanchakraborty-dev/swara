@@ -1,7 +1,8 @@
 //! The comparison corpus. `fetch` gathers LilyPond's own example files, its init files, a pinned set of
 //! Mutopia pieces and the owner's lessons under `bench/corpus/raw/<source>/`. `filter` sorts every `.ly`
 //! file there by whether LilyPond 2.26 accepts it, converting old syntax with `convert-ly` where that
-//! helps, and writes a manifest that names each file without holding any of its text.
+//! helps, and writes a manifest that names each file without holding any of its text. `broken_verify`
+//! checks the hand-written files under `bench/broken/`, each of which names the line its error is on.
 
 use crate::sha256;
 use std::collections::BTreeMap;
@@ -521,14 +522,7 @@ pub fn run_filter(root: &Path, jobs: usize, timeout: Duration) -> Result<(), Str
     if !raw.is_dir() {
         return Err("bench/corpus/raw is missing: run `cargo xtask corpus fetch` first".into());
     }
-    // Under any other version every file would be sorted for the wrong reason.
-    let version = Command::new("lilypond")
-        .arg("--version")
-        .output()
-        .map_err(|e| format!("lilypond: {e}"))?;
-    if !String::from_utf8_lossy(&version.stdout).contains("GNU LilyPond 2.26.0") {
-        return Err("the lilypond on PATH is not 2.26.0".into());
-    }
+    require_lilypond()?;
     let (commit, _) = mutopia_list(root)?;
     let tmp = std::env::temp_dir().join(format!("swara-corpus-{}", std::process::id()));
     fs::create_dir_all(&tmp).map_err(io_err(&tmp))?;
@@ -574,6 +568,180 @@ pub fn run_filter(root: &Path, jobs: usize, timeout: Duration) -> Result<(), Str
         );
     }
     Ok(())
+}
+
+/// Under any other version every file would be checked against the wrong language.
+fn require_lilypond() -> Result<(), String> {
+    let version = Command::new("lilypond")
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("lilypond: {e}"))?;
+    if !String::from_utf8_lossy(&version.stdout).contains("GNU LilyPond 2.26.0") {
+        return Err("the lilypond on PATH is not 2.26.0".into());
+    }
+    Ok(())
+}
+
+/// What a broken file's first two lines promise: the line LilyPond's first error is on, and in words
+/// what is wrong there.
+#[derive(Debug, PartialEq)]
+pub struct Expectation {
+    pub line: u32,
+    pub what: String,
+}
+
+/// Reads `% expect-error-line: N` from a broken file's first line and `% expect: <what>` from its second.
+pub fn parse_expectation(text: &[u8]) -> Result<Expectation, String> {
+    let text = String::from_utf8_lossy(text);
+    let mut lines = text.lines();
+    let line = lines
+        .next()
+        .and_then(|l| l.strip_prefix("% expect-error-line:"))
+        .and_then(|n| n.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .ok_or("the first line is not `% expect-error-line: N` with N a line number")?;
+    let what = lines
+        .next()
+        .and_then(|l| l.strip_prefix("% expect:"))
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .ok_or("the second line is not `% expect: <what is wrong>`")?;
+    Ok(Expectation {
+        line,
+        what: what.to_string(),
+    })
+}
+
+/// LilyPond's first located error: the file and line it names, and its message.
+#[derive(Debug, PartialEq)]
+pub struct FirstError {
+    pub file: String,
+    pub line: u32,
+    pub message: String,
+}
+
+/// The first `<file>:<line>:<column>: error:` or `fatal error:` line in LilyPond's standard error.
+/// Warnings are skipped, and so is an error that names no place.
+pub fn first_error(stderr: &str) -> Option<FirstError> {
+    stderr.lines().find_map(|l| {
+        let (place, message) = [": error: ", ": fatal error: "]
+            .iter()
+            .find_map(|tag| l.split_once(tag))?;
+        // From the right, so that a colon in a folder name stays part of the file.
+        let mut parts = place.rsplitn(3, ':');
+        parts.next()?.parse::<u32>().ok()?;
+        let line = parts.next()?.parse().ok()?;
+        Some(FirstError {
+            file: parts.next()?.to_string(),
+            line,
+            message: message.to_string(),
+        })
+    })
+}
+
+/// One broken file after the check. `problem` is `None` exactly when LilyPond's first error is in this
+/// file, on the line its header names.
+#[derive(Debug)]
+pub struct Verdict {
+    /// The file's name inside the folder.
+    pub path: String,
+    pub problem: Option<String>,
+}
+
+/// Checks every `.ly` file in `dir`, in name order. `stderr_of` runs LilyPond on one file, given by its
+/// absolute path, and returns what it printed to standard error.
+pub fn verify_broken(
+    dir: &Path,
+    stderr_of: impl Fn(&Path) -> io::Result<String>,
+) -> Result<Vec<Verdict>, String> {
+    let mut files: Vec<PathBuf> = fs::read_dir(dir)
+        .map_err(io_err(dir))?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "ly"))
+        .collect();
+    files.sort();
+    files
+        .iter()
+        .map(|file| {
+            let expected = parse_expectation(&fs::read(file).map_err(io_err(file))?);
+            let stderr = stderr_of(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let first = first_error(&stderr);
+            let found = first
+                .as_ref()
+                .filter(|f| Path::new(&f.file).file_name() == file.file_name())
+                .map(|f| f.line);
+            let problem = match (&expected, &first, found) {
+                (Err(header), _, _) => Some(header.clone()),
+                (Ok(e), None, _) => Some(format!(
+                    "expected line {}, LilyPond reports no error",
+                    e.line
+                )),
+                (Ok(e), Some(f), None) => Some(format!(
+                    "expected line {}, LilyPond's first error is in {}: {}",
+                    e.line, f.file, f.message
+                )),
+                (Ok(e), Some(f), Some(n)) if n != e.line => Some(format!(
+                    "expected line {}, LilyPond's first error is on line {n}: {}",
+                    e.line, f.message
+                )),
+                _ => None,
+            };
+            Ok(Verdict {
+                path: file
+                    .file_name()
+                    .expect("read_dir names a file")
+                    .to_string_lossy()
+                    .into_owned(),
+                problem,
+            })
+        })
+        .collect()
+}
+
+/// `cargo xtask broken verify`: LilyPond's first error in every file in `bench/broken/` must sit on the
+/// line that file's header names. Each file is checked with the language server's check command.
+pub fn broken_verify(root: &Path) -> Result<(), String> {
+    require_lilypond()?;
+    let dir = root.join("bench/broken");
+    let mut settings = OsString::from("-dinclude-settings=");
+    settings.push(root.join("assets/lilypond/check-settings.ly"));
+    let tmp = std::env::temp_dir().join(format!("swara-broken-{}", std::process::id()));
+    fs::create_dir_all(&tmp).map_err(io_err(&tmp))?;
+    let stderr_of = |file: &Path| -> io::Result<String> {
+        let out = Command::new("lilypond")
+            .args(["-l", "WARNING"])
+            .arg(&settings)
+            .arg("-I")
+            .arg(&dir)
+            .arg("-o")
+            .arg(tmp.join(file.file_stem().unwrap_or_default()))
+            .arg(file)
+            .current_dir(&dir)
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()?;
+        Ok(String::from_utf8_lossy(&out.stderr).into_owned())
+    };
+    let verdicts = verify_broken(&dir, stderr_of);
+    let _ = fs::remove_dir_all(&tmp);
+    let verdicts = verdicts?;
+    for v in &verdicts {
+        if let Some(problem) = &v.problem {
+            println!("{}: {problem}", v.path);
+        }
+    }
+    let good = verdicts.iter().filter(|v| v.problem.is_none()).count();
+    println!(
+        "broken verify: {good} of {} files have their first error on the expected line",
+        verdicts.len()
+    );
+    match verdicts.len() {
+        0 => Err("bench/broken holds no .ly files".into()),
+        n if good == n => Ok(()),
+        n => Err(format!("{} of {n} files disagree", n - good)),
+    }
 }
 
 #[cfg(test)]
@@ -856,5 +1024,101 @@ mod tests {
         let slow = runner(&sleeper).run(&file, &dir, Duration::from_millis(200));
         assert_eq!(slow, Outcome::TimedOut);
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn expectation_is_read_from_the_first_two_lines() {
+        let text =
+            b"% expect-error-line: 12\n% expect: the brace is never closed\n\\version \"2.26.0\"\n";
+        assert_eq!(
+            parse_expectation(text),
+            Ok(Expectation {
+                line: 12,
+                what: "the brace is never closed".into()
+            })
+        );
+        let crlf = b"% expect-error-line: 7\r\n% expect: a stray >>\r\n";
+        assert_eq!(parse_expectation(crlf).map(|e| e.line), Ok(7));
+    }
+
+    #[test]
+    fn a_file_without_its_header_is_refused() {
+        assert!(parse_expectation(b"\\version \"2.26.0\"\n{ c'4 }\n").is_err());
+        assert!(parse_expectation(b"% expect-error-line: twelve\n% expect: x\n").is_err());
+        assert!(parse_expectation(b"% expect-error-line: 0\n% expect: x\n").is_err());
+        assert!(parse_expectation(b"% expect-error-line: 3\n\\version \"2.26.0\"\n").is_err());
+        assert!(parse_expectation(b"% expect-error-line: 3\n% expect:\n").is_err());
+    }
+
+    #[test]
+    fn first_error_is_read_from_lilypond_stderr() {
+        let stderr = "Processing `/abs/broken/a.ly'\nParsing...\n\
+            /abs/broken/a.ly:9:1: error: syntax error, unexpected '}'\n}\n\
+            /abs/broken/a.ly:12:0: error: syntax error, unexpected end of input\n";
+        assert_eq!(
+            first_error(stderr),
+            Some(FirstError {
+                file: "/abs/broken/a.ly".into(),
+                line: 9,
+                message: "syntax error, unexpected '}'".into()
+            })
+        );
+    }
+
+    #[test]
+    fn warnings_are_skipped_and_fatal_errors_count() {
+        let stderr = "/x/a.ly:3:1: warning: no \\version statement found\n\
+            /x/a.ly:7:2: fatal error: EOF found inside a comment\n";
+        assert_eq!(first_error(stderr).map(|e| e.line), Some(7));
+        assert_eq!(first_error("/x/a.ly:3:1: warning: something odd\n"), None);
+        assert_eq!(first_error("error: no location at all\n"), None);
+    }
+
+    #[test]
+    fn a_colon_in_the_folder_name_does_not_move_the_line() {
+        let found = first_error("/tmp/a:b/c.ly:5:3: error: syntax error\n").unwrap();
+        assert_eq!((found.file.as_str(), found.line), ("/tmp/a:b/c.ly", 5));
+    }
+
+    /// The comparison itself, with a stand-in for LilyPond that answers from a table.
+    #[test]
+    fn verify_reports_every_file_whose_first_error_is_elsewhere() {
+        let dir = scratch("broken");
+        let header = |n: u32| format!("% expect-error-line: {n}\n% expect: something\n{{ c'4\n");
+        put(&dir, "right.ly", header(5).as_bytes());
+        put(&dir, "wrong-line.ly", header(5).as_bytes());
+        put(&dir, "no-error.ly", header(5).as_bytes());
+        put(&dir, "other-file.ly", header(5).as_bytes());
+        put(&dir, "no-header.ly", b"{ c'4\n");
+        put(&dir, "notes.txt", b"not a LilyPond file\n");
+        let stderr_for = |file: &Path| -> io::Result<String> {
+            let name = file.file_name().unwrap().to_str().unwrap();
+            let at = |line: u32| format!("{}:{line}:1: error: syntax error\n", file.display());
+            Ok(match name {
+                "right.ly" | "no-header.ly" => at(5),
+                "wrong-line.ly" => at(6),
+                "other-file.ly" => "/elsewhere/init.ly:5:1: error: syntax error\n".into(),
+                _ => String::new(),
+            })
+        };
+        let verdicts = verify_broken(&dir, stderr_for).unwrap();
+        let names: Vec<&str> = verdicts.iter().map(|v| v.path.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "no-error.ly",
+                "no-header.ly",
+                "other-file.ly",
+                "right.ly",
+                "wrong-line.ly"
+            ]
+        );
+        let ok: Vec<bool> = verdicts.iter().map(|v| v.problem.is_none()).collect();
+        assert_eq!(ok, [false, false, false, true, false]);
+        let problem = |i: usize| verdicts[i].problem.as_deref().unwrap();
+        assert!(problem(0).ends_with("LilyPond reports no error"));
+        assert!(problem(1).starts_with("the first line is not"));
+        assert!(problem(2).contains("is in /elsewhere/init.ly"));
+        assert!(problem(4).starts_with("expected line 5, LilyPond's first error is on line 6"));
     }
 }

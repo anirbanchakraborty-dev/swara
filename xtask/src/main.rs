@@ -11,7 +11,8 @@ use std::time::Duration;
 const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
        cargo xtask spike-play --port <p> [--stop-after <ms>] <file.midi>
        cargo xtask corpus fetch
-       cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]";
+       cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]
+       cargo xtask broken verify";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -31,6 +32,7 @@ fn main() -> ExitCode {
         ["spike-play", "--port", p, "--stop-after", ms, file] => spike_play(p, Some(ms), file),
         ["corpus", "fetch"] => report(corpus::fetch(&root())),
         ["corpus", "filter", options @ ..] => corpus_filter(options),
+        ["broken", "verify"] => report(corpus::broken_verify(&root())),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
