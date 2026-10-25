@@ -10,7 +10,7 @@ permissions:
 env:
   RUST_VERSION: 1.98.0
   # Swara builds against the grammar in a folder beside its own, at the commit it was tested with.
-  GRAMMAR_REV: 3e50865ce45f2684bf8db5e3731818dbbaebc1d1
+  GRAMMAR_REV: 53293e9c5ddb55c033b9068842b158ed01bb74cb
 
 jobs:
   build:
