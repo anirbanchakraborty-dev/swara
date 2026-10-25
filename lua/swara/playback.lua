@@ -83,9 +83,12 @@ local function spawn(path, args, stdin, stdout, on_exit)
   return proc
 end
 
+local launch, advance
+
 --- Writes `text` to the input of the FluidSynth `this`, on libuv's thread pool, so that a full pipe
 --- never holds up the editor. Commands of up to 512 bytes reach FluidSynth whole even while a
 --- `swara play` writes to the same pipe, because the system writes that much to a pipe at once.
+--- The pool can be busy with other work, so a play waits for the last write to finish.
 local function send(this, text)
   if this.closing then
     return
@@ -93,8 +96,13 @@ local function send(this, text)
   this.pending = this.pending + 1
   vim.uv.fs_write(this.input, text, -1, function()
     this.pending = this.pending - 1
-    if this.closing and this.pending == 0 then
+    if this.pending > 0 then
+      return
+    end
+    if this.closing then
       vim.uv.fs_close(this.input)
+    else
+      vim.schedule(advance)
     end
   end)
 end
@@ -119,8 +127,6 @@ local function silence()
   end
 end
 
-local launch, advance
-
 --- Called when the `swara play` process `this` exits. A stream told to stop lets the player be
 --- silenced, now that nothing it sent can still arrive, and lets the next play start.
 local function ended(this, result)
@@ -137,7 +143,8 @@ local function ended(this, result)
 end
 
 --- Starts the play asked for once nothing stands in its way. An older stream still exiting calls
---- this again when it has, and so does a player that is still starting, once it is ready.
+--- this again when it has, a player that is still starting does once it is ready, and so does the
+--- last write to the player once it has finished.
 function advance()
   if not wanted or stream or dying then
     return
@@ -146,6 +153,10 @@ function advance()
     if not loading then
       launch(wanted.soundfont)
     end
+    return
+  end
+  -- A silence still on its way would land after the new stream's first lines and mute it.
+  if player.pending > 0 then
     return
   end
   local play = wanted

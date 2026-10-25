@@ -86,6 +86,26 @@ local function until_received(line)
   end, 10)
 end
 
+--- Holds every thread of libuv's pool with reads that wait for data, so that a write the plugin
+--- queues there cannot finish until the function returned lets them go. The pool has four threads
+--- unless `UV_THREADPOOL_SIZE` says otherwise, and sixteen reads cover either.
+local function hold_pool()
+  local pipes = {}
+  for i = 1, 16 do
+    local fds = assert(vim.uv.pipe())
+    vim.uv.fs_read(fds.read, 1, -1, function()
+      vim.uv.fs_close(fds.read)
+    end)
+    pipes[i] = fds
+  end
+  return function()
+    for _, fds in ipairs(pipes) do
+      vim.uv.fs_write(fds.write, 'x', -1)
+      vim.uv.fs_close(fds.write)
+    end
+  end
+end
+
 local buf = vim.api.nvim_get_current_buf()
 local MIDI = h.tmpdir() .. '/score.midi'
 vim.b[buf].swara_midi = MIDI
@@ -229,6 +249,44 @@ function tests.play_twice_stops_first()
   ]])
   assert(result.played, 'no second `swara play`')
   assert(result.first_alive == false, 'the first `swara play` was running when the second started')
+end
+
+function tests.second_play_waits_for_the_silence()
+  -- The silence goes out on libuv's pool. Held there, it must still reach FluidSynth before the
+  -- next stream's first line, or that stream plays at zero gain.
+  local result = run([[
+    playback.play(buf)
+    until_started('swara', 1)
+    until_received('noteon 0 60 100')
+    local release = hold_pool()
+    playback.play(buf)
+    vim.wait(300)
+    release()
+    until_started('swara', 2)
+    vim.wait(5000, function() return #received() >= 5 end, 10)
+    out({ lines = received() })
+  ]])
+  local expected = { 'echo swara-ready', 'noteon 0 60 100', 'gain 0', 'reset', 'noteon 0 60 100' }
+  assert(vim.deep_equal(result.lines, expected), vim.inspect(result.lines))
+end
+
+function tests.play_after_a_stop_waits_for_the_silence()
+  local result = run([[
+    playback.play(buf)
+    until_started('swara', 1)
+    playback.stop()
+    vim.wait(5000, function() return #received() >= 4 end, 10)
+    local release = hold_pool()
+    playback.stop()
+    playback.play(buf)
+    vim.wait(300)
+    release()
+    until_started('swara', 2)
+    vim.wait(5000, function() return #received() >= 7 end, 10)
+    out({ lines = received() })
+  ]])
+  local expected = { 'echo swara-ready', 'noteon 0 60 100', 'gain 0', 'reset', 'gain 0', 'reset', 'noteon 0 60 100' }
+  assert(vim.deep_equal(result.lines, expected), vim.inspect(result.lines))
 end
 
 function tests.stop_while_loading()
