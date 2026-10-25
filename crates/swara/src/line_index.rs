@@ -56,8 +56,6 @@ impl LineIndex {
 
     /// LilyPond counts columns from 1, one per character, with a tab stop every 8 columns. A column
     /// past the end of the line means the end of the line.
-    // The LilyPond check is the first user, in a later task.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub fn lilypond_column_to_byte(&self, text: &str, line0: u32, col1: u32) -> usize {
         let Some((start, line)) = self.line(text, line0) else {
             return text.len();

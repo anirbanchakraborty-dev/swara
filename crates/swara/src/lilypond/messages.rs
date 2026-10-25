@@ -7,9 +7,6 @@
 //! column. Any other line that follows belongs to the message, such as Guile's own explanation of
 //! an error, or the search path after a missing include.
 
-// The LilyPond check is the first user, in the next task.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::path::PathBuf;
 
 /// Where a message points: the text LilyPond read on standard input, or a file it included.

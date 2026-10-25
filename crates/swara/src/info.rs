@@ -58,7 +58,7 @@ impl Lilypond {
     }
 }
 
-fn find_on_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn find_on_path(name: &str) -> Option<PathBuf> {
     let file = if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() };
     std::env::split_paths(&std::env::var_os("PATH")?)
         .map(|dir| dir.join(&file))

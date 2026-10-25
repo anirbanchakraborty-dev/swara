@@ -29,11 +29,12 @@ use serde_json::Value;
 
 const REPLY_WAIT: Duration = Duration::from_secs(10);
 
-/// A `file://` URI for an absolute path, percent-encoded as Neovim sends it.
+/// A `file://` URI for an absolute path, percent-encoded as Neovim sends it, which leaves the
+/// characters RFC 3986 allows in a path as they are.
 pub fn uri(path: &str) -> Uri {
     let mut encoded = String::from("file://");
     for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || b"/-._~".contains(&byte) {
+        if byte.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@/".contains(&byte) {
             encoded.push(byte as char);
         } else {
             write!(encoded, "%{byte:02X}").unwrap();
@@ -61,9 +62,20 @@ impl TestClient {
     }
 
     pub fn spawn_offering(init_options: Value, encodings: &[&'static str]) -> Self {
+        Self::start(init_options, encodings, &[])
+    }
+
+    /// A client whose server runs with extra environment variables, which the server's own
+    /// children inherit.
+    pub fn spawn_env(init_options: Value, env: &[(&str, &str)]) -> Self {
+        Self::start(init_options, &["utf-8", "utf-16"], env)
+    }
+
+    fn start(init_options: Value, encodings: &[&'static str], env: &[(&str, &str)]) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_swara"))
             .arg("lsp")
             .env("SWARA_TEST", "1")
+            .envs(env.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -169,6 +181,23 @@ impl TestClient {
                 return (params.diagnostics, arrived.saturating_duration_since(self.last_sent));
             }
         }
+    }
+
+    /// Every diagnostics publish for `uri` that arrives within `duration`.
+    pub fn publishes_for(&mut self, uri: &Uri, duration: Duration) -> Vec<Vec<Diagnostic>> {
+        let deadline = Instant::now() + duration;
+        let mut publishes = Vec::new();
+        while let Some((_, notification)) = self.next_notification(deadline) {
+            if notification.method != PublishDiagnostics::METHOD {
+                continue;
+            }
+            let params: PublishDiagnosticsParams =
+                serde_json::from_value(notification.params).unwrap();
+            if params.uri == *uri {
+                publishes.push(params.diagnostics);
+            }
+        }
+        publishes
     }
 
     fn send(&mut self, message: Message) {

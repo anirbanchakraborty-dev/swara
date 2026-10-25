@@ -7,7 +7,7 @@ use lsp_types::{Diagnostic, Position};
 use tree_sitter::InputEdit;
 
 use crate::document::Document;
-use crate::line_index::Encoding;
+use crate::line_index::{Encoding, LineIndex};
 
 /// Positions here are UTF-8, a line and a byte column like Tree-sitter's points, so an edit moves
 /// them exactly. They are converted to the client's encoding when published.
@@ -51,13 +51,23 @@ fn shift_position(p: Position, edit: &InputEdit) -> Position {
 }
 
 /// Converts layer positions to the client's encoding.
-pub fn in_encoding(mut diagnostics: Vec<Diagnostic>, doc: &Document, enc: Encoding) -> Vec<Diagnostic> {
+pub fn in_encoding(diagnostics: Vec<Diagnostic>, doc: &Document, enc: Encoding) -> Vec<Diagnostic> {
+    convert(diagnostics, &doc.text, &doc.index, enc)
+}
+
+/// Converts UTF-8 positions in `text` to the client's encoding.
+pub fn convert(
+    mut diagnostics: Vec<Diagnostic>,
+    text: &str,
+    index: &LineIndex,
+    enc: Encoding,
+) -> Vec<Diagnostic> {
     if enc == Encoding::Utf8 {
         return diagnostics;
     }
     let convert = |p: Position| {
-        let byte = doc.index.position_to_byte(&doc.text, p, Encoding::Utf8);
-        doc.index.byte_to_position(&doc.text, byte, enc)
+        let byte = index.position_to_byte(text, p, Encoding::Utf8);
+        index.byte_to_position(text, byte, enc)
     };
     for diagnostic in &mut diagnostics {
         diagnostic.range.start = convert(diagnostic.range.start);

@@ -1,6 +1,7 @@
 mod commanddata;
 mod diagnostics;
 mod document;
+mod file_uri;
 mod info;
 mod lilypond;
 mod line_index;
