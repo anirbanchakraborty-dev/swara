@@ -28,7 +28,7 @@ Each run rebuilt the PDF with the other bar count and timed the moment Skim repo
 
 Over six runs Skim showed the new count a median of 131 ms after LilyPond exited, between 125 ms and 135 ms. LilyPond finished writing the PDF 6 ms or 7 ms before it exited, so nearly all of the 131 ms is Skim noticing the file and reloading it. An earlier run that asked through a fresh `osascript` call each time agreed, at a median of 130 ms. Frequent asking could slow Skim slightly, so the figure is if anything an overestimate.
 
-In one of the twelve watch runs the frontmost application changed, from the Claude desktop app to MuseScore Studio. Skim's own identifier never appeared, so that was a person switching applications during the run, not Skim taking focus.
+In one of the twelve watch runs the frontmost application changed, from another application to MuseScore Studio. Skim's own identifier never appeared, so that was a person switching applications during the run, not Skim taking focus.
 
 ## The revert route
 
