@@ -361,16 +361,24 @@ impl<'c> Server<'c> {
         let dir = path.parent().unwrap_or(Path::new("/"));
         let includes: Vec<PathBuf> = self.config.include_paths.iter().map(|p| dir.join(p)).collect();
         let spec = run::check_spec(uri, &lilypond, &path, &doc.text, doc.version, &includes);
-        let (uri, version, out_dir) = (spec.uri.clone(), spec.version, spec.out_dir.clone());
-        match run::spawn(spec, self.results_sender.clone()) {
-            Ok(running) => {
-                self.checks.insert(uri, Check { running, out_dir, version });
+        let started = spec.and_then(|spec| {
+            let (uri, version, out_dir) = (spec.uri.clone(), spec.version, spec.out_dir.clone());
+            match run::spawn(spec, self.results_sender.clone()) {
+                Ok(running) => Ok((uri, Check { running, out_dir, version })),
+                Err(error) => {
+                    let _ = fs::remove_dir_all(&out_dir);
+                    Err(error)
+                }
+            }
+        });
+        match started {
+            Ok((uri, check)) => {
+                self.checks.insert(uri, check);
             }
             Err(error) => {
-                let _ = fs::remove_dir_all(&out_dir);
                 let message = format!("LilyPond could not be started: {error}");
                 self.layers.entry(uri.clone()).or_default().check = vec![notice(message)];
-                self.publish(&uri)?;
+                self.publish(uri)?;
             }
         }
         Ok(())

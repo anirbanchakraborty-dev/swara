@@ -2,13 +2,15 @@
 //! its standard error, then hands the text to the server's loop, which never blocks on a child.
 //! On Unix every run leads its own process group, so stopping it also stops whatever it started.
 
+use std::collections::hash_map::RandomState;
 use std::ffi::OsString;
 use std::fs;
+use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -29,8 +31,14 @@ const BUILD_TIMEOUT: Duration = Duration::from_secs(300);
 /// engravers taken out, so nothing is laid out and nothing is written.
 const CHECK_SETTINGS: &str = include_str!("../../assets/lilypond/check-settings.ly");
 
+/// The settings file's name in the work folder.
+const SETTINGS_NAME: &str = "check-settings.ly";
+
 /// Numbers runs and their output folders, so each is told apart from every other.
 static NEXT: AtomicU64 = AtomicU64::new(1);
+
+/// This server's work folder, once it has made one.
+static WORK_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RunKind {
@@ -92,7 +100,7 @@ impl Running {
 
 /// The check of one version of a file, with its text on standard input. The arguments are the
 /// ones `docs/spikes/lilypond-check.md` records, with the settings file and every include folder
-/// given as absolute paths.
+/// given as absolute paths. Fails when the work folder cannot be made.
 pub fn check_spec(
     uri: &Uri,
     lilypond: &Path,
@@ -100,10 +108,11 @@ pub fn check_spec(
     text: &str,
     version: i32,
     include_paths: &[PathBuf],
-) -> RunSpec {
-    let out_dir = work_dir().join(format!("run-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
+) -> io::Result<RunSpec> {
+    let dir = work_dir()?;
+    let out_dir = dir.join(format!("run-{}", NEXT.fetch_add(1, Ordering::Relaxed)));
     let mut settings = OsString::from("-dinclude-settings=");
-    settings.push(settings_path());
+    settings.push(dir.join(SETTINGS_NAME));
     let mut args: Vec<OsString> =
         vec![lilypond.into(), "-l".into(), "WARNING".into(), settings, "-I".into()];
     args.push(file.parent().unwrap_or(Path::new("/")).into());
@@ -114,23 +123,20 @@ pub fn check_spec(
     args.push("-o".into());
     args.push(out_dir.join(file.file_stem().unwrap_or("swara".as_ref())).into());
     args.push("-".into());
-    RunSpec {
+    Ok(RunSpec {
         kind: RunKind::Check,
         uri: uri.clone(),
         version,
         stdin: Some(text.to_owned()),
         args,
         out_dir,
-    }
+    })
 }
 
 /// Starts a run. Its result arrives on `results` once its standard error closes, which is when it
 /// exits or is stopped.
 pub fn spawn(spec: RunSpec, results: Sender<RunResult>) -> io::Result<Running> {
     fs::create_dir_all(&spec.out_dir)?;
-    if spec.kind == RunKind::Check {
-        write_settings()?;
-    }
     let (program, args) = spec.args.split_first().expect("a run names its program");
     let mut command = Command::new(program);
     command
@@ -182,28 +188,130 @@ pub fn check_timeout() -> Duration {
 
 /// Removes this server's folder in the system's temporary folder, with everything in it.
 pub fn remove_work_dir() {
-    let _ = fs::remove_dir_all(work_dir());
-}
-
-/// The folder for this server's settings file and run output, one per process.
-fn work_dir() -> &'static Path {
-    static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(|| std::env::temp_dir().join(format!("swara-{}", std::process::id())))
-}
-
-fn settings_path() -> PathBuf {
-    work_dir().join("check-settings.ly")
-}
-
-/// Writes the settings file unless it is there. A cleaner can empty the temporary folder under a
-/// server that runs for days, so this looks each time. The file appears whole, through a rename,
-/// so a check running at the same moment never reads half of it.
-fn write_settings() -> io::Result<()> {
-    let path = settings_path();
-    if path.is_file() {
-        return Ok(());
+    let dir = WORK_DIR.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(dir) = dir {
+        let _ = fs::remove_dir_all(dir);
     }
-    let partial = work_dir().join("check-settings.ly.partial");
-    fs::write(&partial, CHECK_SETTINGS)?;
-    fs::rename(partial, path)
+}
+
+/// The folder for this server's settings file and run output, one per process. A cleaner can
+/// empty the temporary folder under a server that runs for days, so this looks each time, and
+/// makes a new folder when the old one is gone or no longer private.
+fn work_dir() -> io::Result<PathBuf> {
+    let mut current = WORK_DIR.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(dir) = current.as_ref().filter(|dir| is_private(dir)) {
+        return Ok(dir.clone());
+    }
+    let dir = make_work_dir(&std::env::temp_dir())?;
+    *current = Some(dir.clone());
+    Ok(dir)
+}
+
+/// Makes a folder in `base` that only this user can open, with the settings file in it. LilyPond
+/// runs that file as Scheme, and on Linux the temporary folder is shared by every user, so the
+/// name cannot be guessed, and a name already taken is passed over rather than used.
+fn make_work_dir(base: &Path) -> io::Result<PathBuf> {
+    let mut builder = fs::DirBuilder::new();
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    for attempt in 0..16 {
+        let mut hasher = RandomState::new().build_hasher();
+        hasher.write_u64(attempt);
+        let dir = base.join(format!("swara-{}-{:016x}", std::process::id(), hasher.finish()));
+        match builder.create(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let written = options.open(dir.join(SETTINGS_NAME));
+        if let Err(error) = written.and_then(|mut file| file.write_all(CHECK_SETTINGS.as_bytes())) {
+            let _ = fs::remove_dir_all(&dir);
+            return Err(error);
+        }
+        return Ok(dir);
+    }
+    Err(io::Error::new(io::ErrorKind::AlreadyExists, "every name tried for the work folder was taken"))
+}
+
+/// Whether `dir` is still a work folder this server can trust: a folder and not a link to one,
+/// owned by this user and closed to everyone else, holding a settings file that is the same.
+#[cfg(unix)]
+fn is_private(dir: &Path) -> bool {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    // SAFETY: geteuid takes nothing and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    let closed = |path: &Path, kind: fn(&fs::FileType) -> bool| {
+        fs::symlink_metadata(path).is_ok_and(|meta| {
+            kind(&meta.file_type()) && meta.uid() == me && meta.permissions().mode() & 0o077 == 0
+        })
+    };
+    closed(dir, fs::FileType::is_dir) && closed(&dir.join(SETTINGS_NAME), fs::FileType::is_file)
+}
+
+#[cfg(not(unix))]
+fn is_private(dir: &Path) -> bool {
+    dir.join(SETTINGS_NAME).is_file()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    use super::*;
+
+    /// A fresh folder for one test, standing in for the shared temporary folder.
+    fn base(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("swara-unit-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn work_dir_only_this_user_can_open() {
+        let base = base("private");
+        let dir = make_work_dir(&base).unwrap();
+        assert_eq!(mode(&dir), 0o700);
+        let settings = dir.join(SETTINGS_NAME);
+        assert_eq!(mode(&settings), 0o600);
+        assert_eq!(fs::read_to_string(settings).unwrap(), CHECK_SETTINGS);
+        assert!(is_private(&dir));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn folder_someone_else_could_write_is_not_trusted() {
+        let base = base("planted");
+        let planted = base.join("planted");
+        fs::create_dir(&planted).unwrap();
+        fs::write(planted.join(SETTINGS_NAME), "#(system \"true\")").unwrap();
+        fs::set_permissions(&planted, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!is_private(&planted));
+        // A link to a private folder is not that folder.
+        let private = make_work_dir(&base).unwrap();
+        let link = base.join("link");
+        symlink(&private, &link).unwrap();
+        assert!(!is_private(&link));
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn folder_without_its_settings_is_replaced() {
+        let base = base("emptied");
+        let dir = make_work_dir(&base).unwrap();
+        fs::remove_file(dir.join(SETTINGS_NAME)).unwrap();
+        assert!(!is_private(&dir));
+        let again = make_work_dir(&base).unwrap();
+        assert_ne!(again, dir);
+        assert!(is_private(&again));
+        fs::remove_dir_all(base).unwrap();
+    }
 }
