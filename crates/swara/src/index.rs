@@ -236,8 +236,8 @@ pub struct Index {
 }
 
 impl Index {
-    /// `include_paths` are searched after the including file's own folder. A relative one is
-    /// taken from that folder.
+    /// `include_paths` are searched after the including file's folder and the score's folder. A
+    /// relative one is taken from the score's folder, as the check and the build take it.
     pub fn new(include_paths: Vec<String>) -> Self {
         let mut parser = Parser::new();
         parser
@@ -275,29 +275,26 @@ impl Index {
         self.open.remove(&canonical(path));
     }
 
-    /// The file `\include "text"` in `from` names: in `from`'s folder, then in each include path,
-    /// then in LilyPond's `ly/` folder.
+    /// The file `\include "text"` in `from` names, with `from` compiled as part of any score that
+    /// reaches it.
     pub fn resolve_include(&self, from: &Path, text: &str) -> Option<PathBuf> {
-        let dir = from.parent()?;
-        let searched = self.include_paths.iter().map(|p| dir.join(p));
-        let shipped = self.datadir.iter().map(|d| d.join("ly"));
-        std::iter::once(dir.to_owned())
-            .chain(searched)
-            .chain(shipped)
-            .map(|folder| normal(&folder.join(text)))
-            .find(|candidate| self.open.contains_key(&canonical(candidate)) || candidate.is_file())
+        self.resolve_with_root(from, text).map(|(_, path)| path)
     }
 
-    /// Every definition `root` can see: its own, those of the files it includes, and those of the
+    /// Every definition `path` can see: its own, those of the files it includes, and those of the
     /// open files that include it, with everything they include.
-    pub fn definitions_visible_from(&self, root: &Path) -> Vec<Definition> {
-        let key = canonical(root);
+    pub fn definitions_visible_from(&self, path: &Path) -> Vec<Definition> {
+        let key = canonical(path);
+        let roots = self.roots_of(path);
         let mut seen = HashSet::new();
         let mut found = Vec::new();
-        self.collect(root, &mut seen, &mut found);
-        for path in self.open.keys() {
-            if !seen.contains(path) && self.closure(path).iter().any(|(p, _)| *p == key) {
-                self.collect(path, &mut seen, &mut found);
+        for root in &roots {
+            self.collect(root, path, &mut seen, &mut found);
+        }
+        for open in roots.iter().chain(self.open_files().iter()) {
+            if !seen.contains(&canonical(open)) && self.closure(open).iter().any(|(p, _)| *p == key)
+            {
+                self.collect(open, open, &mut seen, &mut found);
             }
         }
         found
@@ -310,7 +307,63 @@ impl Index {
 
     /// The languages active after `\include "text"` in `from`, given those active before it.
     pub fn languages_after_include(&self, from: &Path, text: &str, before: Languages) -> Languages {
-        self.after_on_chain(from, text, before, &mut Vec::new())
+        match self.resolve_with_root(from, text) {
+            Some((root, _)) => self.after_on_chain(&root, from, text, before, &mut Vec::new()),
+            None => before,
+        }
+    }
+
+    /// The file `\include "text"` in `from` names when `root` is the file LilyPond runs on: in
+    /// `from`'s folder, then in `root`'s, then in each include path, then in LilyPond's `ly/`
+    /// folder. The check and the build pass `-I` with `root`'s folder, which is why it is searched.
+    fn resolve_in(&self, root: &Path, from: &Path, text: &str) -> Option<PathBuf> {
+        let dir = from.parent()?;
+        let base = root.parent().unwrap_or(dir);
+        let searched = self.include_paths.iter().map(|p| base.join(p));
+        let shipped = self.datadir.iter().map(|d| d.join("ly"));
+        std::iter::once(dir.to_owned())
+            .chain((base != dir).then(|| base.to_owned()))
+            .chain(searched)
+            .chain(shipped)
+            .map(|folder| normal(&folder.join(text)))
+            .find(|candidate| self.open.contains_key(&canonical(candidate)) || candidate.is_file())
+    }
+
+    /// `resolve_in` under the first of `from`'s roots where `text` is found, with that root.
+    fn resolve_with_root(&self, from: &Path, text: &str) -> Option<(PathBuf, PathBuf)> {
+        self.roots_of(from).into_iter().find_map(|root| {
+            let found = self.resolve_in(&root, from, text)?;
+            Some((root, found))
+        })
+    }
+
+    /// The files LilyPond may be run on when `path` is compiled: `path` itself unless it is an
+    /// `.ily`, and each open score that includes it, directly or not. A file no score reaches is
+    /// its own root.
+    fn roots_of(&self, path: &Path) -> Vec<PathBuf> {
+        let key = canonical(path);
+        let mut roots = Vec::new();
+        if !is_part(path) {
+            roots.push(path.to_owned());
+        }
+        for open in self.open_files() {
+            if open != key && !is_part(&open) && self.closure(&open).iter().any(|(p, _)| *p == key)
+            {
+                roots.push(open);
+            }
+        }
+        if roots.is_empty() {
+            roots.push(path.to_owned());
+        }
+        roots
+    }
+
+    /// The open files, scores before `.ily` parts and each group in path order, so that a walk
+    /// over all of them reaches a part through its score first.
+    fn open_files(&self) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = self.open.keys().cloned().collect();
+        files.sort_by_key(|p| (is_part(p), p.clone()));
+        files
     }
 
     /// The summary of an open file, or of a file on disk, read again when it has changed.
@@ -335,25 +388,34 @@ impl Index {
         Some(summary)
     }
 
-    /// `path` and every file it includes, directly or not, each once, by canonical path.
+    /// `path` and every file it includes, directly or not, each once, by canonical path, with
+    /// `path` as the root.
     fn closure(&self, path: &Path) -> Vec<(PathBuf, Rc<Summary>)> {
         let mut seen = HashSet::new();
         let mut files = Vec::new();
-        self.walk(path, &mut seen, &mut |key, summary| {
+        self.walk(path, path, &mut seen, &mut |key, summary| {
             files.push((key.to_owned(), summary.clone()))
         });
         files
     }
 
-    fn collect(&self, path: &Path, seen: &mut HashSet<PathBuf>, found: &mut Vec<Definition>) {
-        self.walk(path, seen, &mut |_, summary| {
+    fn collect(
+        &self,
+        root: &Path,
+        path: &Path,
+        seen: &mut HashSet<PathBuf>,
+        found: &mut Vec<Definition>,
+    ) {
+        self.walk(root, path, seen, &mut |_, summary| {
             found.extend(summary.definitions.iter().cloned())
         });
     }
 
-    /// Visits `path` and the files it includes, skipping any already in `seen`, so a cycle ends.
+    /// Visits `path` and the files it includes, found with `root` as the file LilyPond runs on,
+    /// skipping any already in `seen`, so a cycle ends.
     fn walk(
         &self,
+        root: &Path,
         path: &Path,
         seen: &mut HashSet<PathBuf>,
         visit: &mut dyn FnMut(&Path, &Rc<Summary>),
@@ -371,7 +433,7 @@ impl Index {
             // Pushed in reverse, so they are visited in the order they are written.
             for step in summary.steps.iter().rev() {
                 if let Step::Include(text) = step
-                    && let Some(included) = self.resolve_include(&path, text)
+                    && let Some(included) = self.resolve_in(root, &path, text)
                 {
                     stack.push(included);
                 }
@@ -387,18 +449,22 @@ impl Index {
         chain.push(key.clone());
         let mut reachable = HashSet::new();
         let mut files = Vec::new();
-        for open in self.open.keys() {
-            self.walk(open, &mut reachable, &mut |p, summary| {
-                files.push((p.to_owned(), summary.clone()))
+        for open in self.open_files() {
+            self.walk(&open, &open, &mut reachable, &mut |p, summary| {
+                files.push((open.clone(), p.to_owned(), summary.clone()))
             });
         }
         let mut union = BTreeSet::new();
         let mut included = false;
-        for (includer, summary) in &files {
+        for (root, includer, summary) in &files {
+            let includes = |text: &str| {
+                self.resolve_in(root, includer, text)
+                    .is_some_and(|p| canonical(&p) == key)
+            };
             if !summary
                 .steps
                 .iter()
-                .any(|s| matches!(s, Step::Include(t) if self.includes(includer, t, &key)))
+                .any(|s| matches!(s, Step::Include(t) if includes(t)))
             {
                 continue;
             }
@@ -407,7 +473,7 @@ impl Index {
             for step in &summary.steps {
                 match step {
                     Step::Language(name) => current = Some(BTreeSet::from([name.clone()])),
-                    Step::Include(text) if self.includes(includer, text, &key) => match &current {
+                    Step::Include(text) if includes(text) => match &current {
                         Some(languages) => union.extend(languages.iter().cloned()),
                         None => {
                             chain.pop();
@@ -415,7 +481,7 @@ impl Index {
                         }
                     },
                     Step::Include(text) => {
-                        current = self.after_on_chain(includer, text, current, chain)
+                        current = self.after_on_chain(root, includer, text, current, chain)
                     }
                 }
             }
@@ -423,26 +489,22 @@ impl Index {
         chain.pop();
         if included {
             Some(union)
-        } else if path.extension().is_some_and(|e| e == "ily") {
+        } else if is_part(path) {
             None
         } else {
             Some(BTreeSet::from([DEFAULT_LANGUAGE.to_owned()]))
         }
     }
 
-    fn includes(&self, from: &Path, text: &str, key: &Path) -> bool {
-        self.resolve_include(from, text)
-            .is_some_and(|p| canonical(&p) == key)
-    }
-
     fn after_on_chain(
         &self,
+        root: &Path,
         from: &Path,
         text: &str,
         before: Languages,
         chain: &mut Vec<PathBuf>,
     ) -> Languages {
-        let Some(path) = self.resolve_include(from, text) else {
+        let Some(path) = self.resolve_in(root, from, text) else {
             return before;
         };
         let key = canonical(&path);
@@ -457,12 +519,17 @@ impl Index {
         for step in &summary.steps {
             current = match step {
                 Step::Language(name) => Some(BTreeSet::from([name.clone()])),
-                Step::Include(text) => self.after_on_chain(&path, text, current, chain),
+                Step::Include(text) => self.after_on_chain(root, &path, text, current, chain),
             };
         }
         chain.pop();
         current
     }
+}
+
+/// Whether `path` is an `.ily` file, a part meant to be included rather than run.
+fn is_part(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e == "ily")
 }
 
 /// `path` with `.` dropped and each `..` taking off the folder before it, without asking the
@@ -643,6 +710,34 @@ fn = #(define-music-function (sym m) (symbol? (ly:music? (make-music 'Sequential
         assert_eq!(index.resolve_include(&main, "x.ily"), Some(shipped.clone()));
         std::fs::remove_file(&shipped).unwrap();
         assert_eq!(index.resolve_include(&main, "x.ily"), None);
+    }
+
+    #[test]
+    fn includes_found_beside_the_score() {
+        // The check and the build pass `-I` with the score's folder, so a part may include a file
+        // that sits beside the score rather than beside the part.
+        let dir = Scratch::new("index-score-folder");
+        let main = dir.path().join("main.ly");
+        let part = dir.write("parts/a.ily", "\\include \"b.ily\"\n");
+        let beside = dir.write("b.ily", "fromB = { c }\n\\language \"english\"\n");
+        let mut index = Index::new(Vec::new());
+        index.update(
+            &main,
+            &document(Some(&main), "\\include \"parts/a.ily\"\n{ \\fromB }\n"),
+        );
+        index.update(&part, &document(Some(&part), "\\include \"b.ily\"\n"));
+        // The open score's path is held canonical, so the hit is spelled that way.
+        let found = index.resolve_include(&part, "b.ily");
+        assert_eq!(found.as_deref().map(canonical), Some(canonical(&beside)));
+        assert_eq!(names(&index.definitions_visible_from(&main)), ["fromB"]);
+        assert_eq!(names(&index.definitions_visible_from(&part)), ["fromB"]);
+        let nederlands = Some(BTreeSet::from([DEFAULT_LANGUAGE.to_owned()]));
+        let english = Some(BTreeSet::from(["english".to_owned()]));
+        assert_eq!(index.start_languages(&beside), nederlands);
+        assert_eq!(
+            index.languages_after_include(&part, "b.ily", nederlands),
+            english
+        );
     }
 
     #[test]
