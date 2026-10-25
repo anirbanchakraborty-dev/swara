@@ -1,3 +1,4 @@
+mod check_queries;
 mod compare;
 mod corpus;
 mod dist;
@@ -14,6 +15,7 @@ const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
        cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]
        cargo xtask broken verify
        cargo xtask dist --target <triple> --out <dir>
+       cargo xtask check-queries
        cargo xtask compare --name <n> [--commit <sha>] --lib <dylib> --symbol <sym>
                    [--inject-lib <dylib> --inject-symbol <sym> --inject-query <scm>] --out <json>";
 
@@ -37,6 +39,7 @@ fn main() -> ExitCode {
         ["dist", "--target", triple, "--out", out] => {
             report(dist::run(&root(), triple, Path::new(out)))
         }
+        ["check-queries"] => report(check_queries::run(&root())),
         ["compare", options @ ..] => compare(options),
         _ => {
             eprintln!("{USAGE}");

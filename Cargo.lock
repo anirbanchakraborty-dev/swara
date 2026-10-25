@@ -349,6 +349,7 @@ dependencies = [
  "serde_json",
  "tree-sitter",
  "tree-sitter-language",
+ "tree-sitter-lilypond",
 ]
 
 [[package]]

@@ -8,6 +8,7 @@ publish = false
 libloading = "0.9.0"
 tree-sitter = "0.27.1"
 tree-sitter-language = "0.1.9"
+tree-sitter-lilypond = { path = "../../tree-sitter-lilypond" }
 
 [dev-dependencies]
 serde_json = "1.0.154"

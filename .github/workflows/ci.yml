@@ -137,5 +137,8 @@ jobs:
       - name: Build swara
         run: cargo build --locked -p swara -p swara-parser
 
+      - name: Queries match the grammar
+        run: cargo xtask check-queries
+
       - name: Plugin tests
         run: nvim --clean --headless -l tests/run.lua

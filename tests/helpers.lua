@@ -79,6 +79,16 @@ function M.child_json(lua, timeout_ms)
   return vim.json.decode(lines[#lines])
 end
 
+--- The decoded `swara info` of the debug build that `cargo build` leaves in `target/`, which gives
+--- the tests the path of Swara's grammar library.
+function M.info()
+  local exe = M.root .. '/target/debug/swara'
+  assert(vim.fn.executable(exe) == 1, 'no ' .. exe .. ': run `cargo build -p swara -p swara-parser`')
+  local result = vim.system({ exe, 'info' }, { text = true }):wait(10000)
+  assert(result.code == 0, ('`swara info` exited %d: %s'):format(result.code, result.stderr))
+  return vim.json.decode(result.stdout)
+end
+
 --- Removes every folder `tmpdir` made.
 function M.cleanup()
   for _, dir in ipairs(made) do
