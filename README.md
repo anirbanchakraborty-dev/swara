@@ -38,7 +38,7 @@ brew install neovim lilypond fluid-synth
 brew install --cask musescore skim
 ```
 
-Swara plays a score through FluidSynth's command shell, which listens on a port. FluidSynth 2.6.1 opens that port on every network interface and has no setting to keep it on this machine, so from the first play until Neovim quits, another machine on the same network can send it commands. On a shared network, quitting Neovim after playing closes the port.
+Playback keeps one FluidSynth running from the first play until Neovim quits and sends it commands through a pipe, so it opens no network port.
 
 ## Installing
 
@@ -129,10 +129,10 @@ Each target comes from the design, and every one was met with LilyPond 2.26.0 on
 | Server ready | 2.3 ms | under 100 ms |
 | PDF after save, 4-bar lesson | 266 ms | about 300 ms |
 | PDF after save, 100-bar song | 1,311 ms | about 1,500 ms |
-| Play, first time, to the first note | about 1,030 ms | about 1,500 ms |
+| Play, first time, to the first note | about 1,060 ms | about 1,500 ms |
 | Play, later, to the first note | about 4 ms | under 200 ms |
 
-The LilyPond check has the least room: 330 ms of it is the pause Swara waits for typing to stop, and most of the rest is LilyPond itself. The two play figures run to the first note Swara sends, and FluidSynth's audio buffer adds a delay after that which was not measured.
+The LilyPond check has the least room: 330 ms of it is the pause Swara waits for typing to stop, and most of the rest is LilyPond itself. The two play figures run to the first note Swara sends. A first play sends it only once FluidSynth has opened its audio output, and FluidSynth's audio buffer adds a delay after that which was not measured.
 
 ## Building from source
 

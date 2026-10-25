@@ -66,6 +66,16 @@ On the song itself, `reset` alone had left sound 122 ms after it. The stop is no
 
 Zero gain stays set after the stop, so the next playback has to send `gain <value>` before its first note. Sending `gain 0.2`, FluidSynth's default, after a stop brought a held note back to between −29 and −31 dBFS.
 
+## Standard input instead of the port
+
+On 2026-10-25 the route changed. The port that `-s` opens listens on every network interface, and FluidSynth 2.6.1 has no setting that keeps it on the local machine, so while the player ran, another machine on the same network could send it commands. FluidSynth also reads the same commands on its standard input when that input is a pipe, and the plugin now starts it as `fluidsynth -o synth.dynamic-sample-loading=1 <soundfont>` with its input on a pipe the plugin holds. Each `swara play` writes its commands to its standard output, which the plugin points at the same pipe, and the plugin writes `gain 0` and `reset` there after a stop. A write of up to 512 bytes reaches a pipe whole on macOS, so commands from two writers never mix within a line.
+
+Readiness is an `echo`. The plugin writes `echo swara-ready` as soon as FluidSynth starts, and FluidSynth answers with `swara-ready` on a line of its own once it reads its input. It first reads the line back after its `> ` prompt, so only the bare answer counts. FluidSynth 2.6.1's `main()` starts the port server, then the audio output, then the shell that reads standard input, with nothing else between them. The port could therefore answer before the audio output was open, and the answer on the input cannot.
+
+The timings showed that ordering. In five runs, a probe that wrote `echo` to a fresh FluidSynth read the answer after a median of 1,551 ms, against 1,010 ms for the port. One FluidSynth started with both the port and the pipe accepted a connection at 989 ms and answered on its input at 1,549 ms, so the port route's first-play figure had run to a moment when a note could not yet sound. Later the same day, after the plugin moved to the pipe, the same probe answered at 1,069 ms and the plugin's first play started `swara play` after a median of 1,058 ms over five runs. How long the audio output took to open varied between those sessions, and the cause was not traced. Setting `TERM=dumb`, or passing `-q` or `-n`, made no difference.
+
+When its input ends, FluidSynth exits with status 0 and prints `fluidsynth: panic: An error occurred while reading from stdin.` to its error output. The input ends once every copy of the pipe's writing end is closed. The plugin closes its copy when Neovim quits, and the system closes it for a Neovim that is killed. A `swara play` holds a copy while it plays, so FluidSynth outlives a killed Neovim until the song playing at the time ends. A FluidSynth started with `-s` does not exit when its input ends, and `-i` turns the input shell off.
+
 ## Facts the server has to honour
 
 - FluidSynth's shell sends nothing on connect unless `shell.prompt` is set. With it set, it sends the prompt on connect and after every command. Whatever it sends has to be read and discarded.
