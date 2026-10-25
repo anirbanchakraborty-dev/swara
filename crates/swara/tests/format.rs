@@ -22,12 +22,12 @@ fn run(args: &[&str], input: &str) -> (String, String, i32) {
         .stderr(Stdio::piped())
         .spawn()
         .expect("swara starts");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(input.as_bytes())
-        .unwrap();
+    // swara may exit before reading all of its input, as it does on a bad argument, and the write
+    // then fails with a broken pipe. The exit code and output below are what the tests judge.
+    let written = child.stdin.take().unwrap().write_all(input.as_bytes());
+    if let Err(error) = written {
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe, "{error}");
+    }
     let output = child.wait_with_output().unwrap();
     (
         String::from_utf8(output.stdout).unwrap(),
@@ -59,7 +59,10 @@ fn cli_refusal_passes_input_through() {
 
 #[test]
 fn cli_rejects_a_bad_indent() {
-    let (out, err, code) = run(&["format", "--indent", "two"], "{ c }\n");
+    // swara refuses the argument before it reads its input. An input larger than any pipe buffer
+    // makes that refusal land while the input is still being written, every time.
+    let input = "{ c }\n".repeat(50_000);
+    let (out, err, code) = run(&["format", "--indent", "two"], &input);
     assert_eq!((out.as_str(), code), ("", 2));
     assert!(err.contains("usage"), "{err}");
 }
