@@ -75,6 +75,26 @@ fn info_reports_grammar_and_abi() {
     assert_eq!(Path::new(grammar), expected);
 }
 
+/// The grammar is a path dependency on a git checkout, here, in CI and in the release build, so the
+/// commit `swara info` reports is the one that checkout is on.
+#[test]
+fn info_names_the_grammar_checkout_commit() {
+    let grammar = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tree-sitter-lilypond");
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(&grammar)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "{} is a git checkout",
+        grammar.display()
+    );
+    let head = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(info(swara())["grammar_rev"], head.trim());
+}
+
 /// The Homebrew layout: `bin/swara` reached through a symlink, and the library in `lib`.
 #[cfg(unix)]
 #[test]
