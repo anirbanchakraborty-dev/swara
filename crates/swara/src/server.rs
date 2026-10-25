@@ -616,7 +616,6 @@ impl<'c> Server<'c> {
         self.included.values().filter_map(|files| files.get(path)).flatten().cloned().collect()
     }
 
-    /// Rebuilds the syntax errors of one file and publishes all its diagnostics.
     /// `range`, in UTF-8 positions in the file at `uri`, in the client's encoding. The open copy
     /// of the file is read when there is one, since the index summarised that copy.
     fn encoded(&self, uri: &Uri, range: Range) -> Range {
@@ -640,6 +639,7 @@ impl<'c> Server<'c> {
         Range::new(convert(range.start), convert(range.end))
     }
 
+    /// Rebuilds the syntax errors of one file and publishes all its diagnostics.
     fn refresh(&mut self, uri: &Uri) -> Result<()> {
         let (Some(doc), Some(layers)) = (self.documents.get(uri), self.layers.get_mut(uri)) else {
             return Ok(());
@@ -716,14 +716,14 @@ impl Drop for Server<'_> {
     }
 }
 
-/// Only a `.ly` file on disk is checked. An `.ily` file is checked through the files that
-/// include it.
 /// Records an open file in the index, and returns whether what it defines or includes changed. A
 /// file with no path cannot be included, so it is not recorded.
 fn index_update(index: &mut Index, doc: &Document) -> bool {
     file_uri::to_path(&doc.uri).is_some_and(|path| index.update(&path, doc))
 }
 
+/// Only a `.ly` file on disk is checked. An `.ily` file is checked through the files that
+/// include it.
 fn checkable(uri: &Uri) -> bool {
     file_uri::to_path(uri).is_some_and(|path| path.extension().is_some_and(|ext| ext == "ly"))
 }
