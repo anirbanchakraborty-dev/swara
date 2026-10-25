@@ -67,8 +67,9 @@ Everything under Global Constraints in the foundations plan applies. In addition
 - Produces: `pub enum Encoding { Utf8, Utf16 }` and `pub struct LineIndex`, with `LineIndex::new(text: &str)`, `fn position_to_byte(&self, text: &str, p: lsp_types::Position, enc: Encoding) -> usize`, `fn byte_to_position(&self, text: &str, byte: usize, enc: Encoding) -> lsp_types::Position`, and `fn lilypond_column_to_byte(&self, text: &str, line0: u32, col1: u32) -> usize`.
 
 - [ ] **Write the failing tests.**
-  - `utf8_round_trip` and `utf16_round_trip` run on `"a\tগান c4\n\"আমি\" d"` at every character boundary.
-  - `lilypond_tab_column`: on the line `"\tc4 \\foo"`, LilyPond's column 10 is the byte of `\`, because the tab advances to column 9.
+  - `utf8_round_trip` and `utf16_round_trip` run on `"a\tগান c4\n\"আমি\" d^\"𝄞\""` at every character boundary. 𝄞 (U+1D11E) is outside the Basic Multilingual Plane, so it is one character, four UTF-8 bytes and two UTF-16 units, and a position inside its pair of units maps to the byte where it starts rather than panicking.
+  - `lilypond_non_bmp_column`: on the line `"{ c4^\"𝄞\" } }"`, LilyPond's column 12 is the byte of the last `}` (byte 14), whose UTF-16 position is character 12. LilyPond 2.26.0 reported `2:12` for this line, the same column as with a Bengali letter in place of 𝄞, because it counts characters.
+  - `lilypond_tab_column`: on the line `"\tc4 \\foo"`, LilyPond's column 12 is the byte of `\` (byte 4), because LilyPond counts columns from 1 with a tab stop every 8 columns: the tab advances to column 9, so `c` is 9, `4` is 10, the space 11 and `\` 12. LilyPond 2.26.0 reported exactly `2:12` for this line, and `tab-column.stderr` (`{ c'4 d'4 }`, a tab, then `}` reported at column 17) follows the same rule.
   - `lilypond_bengali_column`: on `"\"গান\" \\foo"`, column 7 is the byte of `\`, because LilyPond counts characters.
   - `crlf_lines`: a `\r\n` file gives the same line starts as a `\n` file, plus one byte per line.
   - The tab and Bengali expectations are cross-checked against `tests/fixtures/lilypond/tab-column.stderr` and `utf8-column.stderr` from the foundations plan.
@@ -313,9 +314,9 @@ Everything under Global Constraints in the foundations plan applies. In addition
 
 **Interfaces:**
 - Consumes: `read_smf`, `TimedEvent`, `Event` and `shell_line` from the foundations plan.
-- Produces: `swara play --port P FILE`, which connects to `127.0.0.1:P`, writes each event's shell line at its time measured from a monotonic start, writes `reset` after the last event, and exits 0. It exits 3 when the port refuses. Stopping is the plugin's job: it kills the process and sends `reset` itself.
+- Produces: `swara play --port P [--gain G] FILE`, which connects to `127.0.0.1:P`, writes `gain G` first (default 0.2, FluidSynth's own default, because the previous stop left the gain at zero), then writes each event's shell line at its time measured from a monotonic start, writes `reset` after the last event, and exits 0. A thread reads and discards everything the shell sends back for as long as the connection is open, since a shell started with `shell.prompt` answers every command and an unread socket would eventually stall the writes. It exits 3 when the port refuses. Stopping is the plugin's job: it kills the process and sends `gain 0` then `reset` itself, as `docs/spikes/playback.md` measured.
 
-- [ ] **Move the tests,** then add `connection_refused_exits_3` and `streams_in_order_on_time`. The second uses a local `TcpListener` in the test to check that events arrive in order, that the last is `reset`, and that each arrives no earlier than its time.
+- [ ] **Move the tests,** then add `connection_refused_exits_3`, `streams_in_order_on_time` and `drains_what_the_shell_sends`. The second uses a local `TcpListener` in the test to check that the first line is `gain 0.2`, that events arrive in order, that the last is `reset`, and that each arrives no earlier than its time. With `--gain 0.5` the first line is `gain 0.5`. The third's listener answers every line it receives with 64 KiB of prompt text, so a `swara play` that never reads its socket fills both buffers and stalls. The test is bounded at 10 s and fails on a stall.
 - [ ] **Run them to see them fail.** Run `cargo test -p swara play`. Expected: FAIL.
 - [ ] **Implement `play.rs`.**
 - [ ] **Run them to see them pass.** Run `cargo test -p swara play`. Expected: PASS.

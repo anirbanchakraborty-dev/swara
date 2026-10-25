@@ -32,7 +32,15 @@ In one of the twelve watch runs the frontmost application changed, from the Clau
 
 ## The revert route
 
-Each run rebuilt the PDF and then ran `osascript -e 'tell application "Skim" to revert document 1'`, the way the plugin would send it. The whole call took a median of 115 ms, between 111 ms and 124 ms, and Skim reported the new page count as soon as it returned, in all six runs. Starting `osascript` accounts for almost all of that time. Because the watch preferences were on, Skim's own reload may have raced the revert, but the call's time is what the plugin waits for either way. The frontmost application was unchanged in all six runs.
+Each run rebuilt the PDF and then ran `osascript -e 'tell application "Skim" to revert document 1'`. The whole call took a median of 115 ms, between 111 ms and 124 ms, and Skim reported the new page count as soon as it returned, in all six runs. Starting `osascript` accounts for almost all of that time. Because the watch preferences were on, Skim's own reload may have raced the revert, but the call's time is what the plugin waits for either way. The frontmost application was unchanged in all six runs.
+
+`document 1` is the frontmost Skim document, which is the wrong one whenever more than one PDF is open, so the plugin addresses the document by its path instead. Skim's dictionary, `Skim.sdef` inside the application, gives the document class a `file` property and a hidden `path` property that holds the POSIX path as text. The form the plugin sends passes the path as an argument rather than writing it into the script, so no quoting is involved:
+
+```bash
+osascript -e 'on run argv' -e 'tell application "Skim" to revert (documents whose path is (item 1 of argv))' -e 'end run' <pdf>
+```
+
+It was checked on 2026-10-24 against a PDF opened with `open -g -a Skim`, in a folder whose name held a space and in one whose name was Bengali: both reverted with exit status 0, and the same form with `count` found exactly one document. A path Skim does not have open also exits 0 and changes nothing. Skim stores the resolved path: a PDF opened as `/tmp/…/t.pdf` was held as `/private/tmp/…/t.pdf`, and the unresolved path matched no document. The plugin therefore resolves the path with `vim.uv.fs_realpath` before sending it.
 
 ## Reproducing
 

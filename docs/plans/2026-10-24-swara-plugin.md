@@ -136,13 +136,14 @@ Everything under Global Constraints in the foundations plan applies. In addition
 
 **Interfaces:**
 - Consumes: the refresh route chosen in `docs/spikes/skim.md`.
-- Produces: `viewer.built(buf, params)`. After the first successful build of a PDF in this session, it runs `open -g -a Skim <pdf>` when Skim is installed, `open -g <pdf>` on macOS without Skim, and `vim.ui.open(pdf)` elsewhere. Later builds of the same PDF do nothing when the spike chose Skim's own reload, or run the spike's `osascript` revert when it did not. A failed build opens nothing and echoes "Swara: build failed, see the diagnostics".
+- Produces: `viewer.built(buf, params)`. After the first successful build of a PDF in this session, it runs `open -g -a Skim <pdf>` when Skim is installed, `open -g <pdf>` on macOS without Skim, and `vim.ui.open(pdf)` elsewhere. Later builds of the same PDF do nothing when both of Skim's watch preferences read 1, and otherwise run the by-path revert from `docs/spikes/skim.md`: `{ 'osascript', '-e', 'on run argv', '-e', 'tell application "Skim" to revert (documents whose path is (item 1 of argv))', '-e', 'end run', realpath }`, where `realpath` is `vim.uv.fs_realpath(pdf)`, because Skim holds resolved paths and `document 1` is whichever PDF happens to be in front. A failed build opens nothing and echoes "Swara: build failed, see the diagnostics".
 - Produces: `viewer.open(buf)` for `<localleader>o`. It runs `open -a Skim <pdf>` without `-g`, so Skim comes forward, or `vim.ui.open` elsewhere.
 - Produces: `preview.show(buf)`, which sends `workspace/executeCommand` `swara.preview` with `{ uri, cfg.preview_dpi }` and shows the returned PNG with snacks.nvim's image module when it is loaded, otherwise with `vim.ui.open`. The snacks call is probed against its current release and noted in a comment.
 
 - [ ] **Write the failing tests** in `viewer_spec.lua`, replacing `vim.system` and `vim.ui.open` with recorders:
   - `first_build_opens_in_background`: argv is exactly `{ 'open', '-g', '-a', 'Skim', pdf }`.
-  - `second_build_refreshes_per_spike`: nothing, or the `osascript` revert, as the spike recorded.
+  - `second_build_refreshes_per_spike`: nothing when both preferences read 1, otherwise exactly the by-path `osascript` argv above, with the PDF's resolved path as its last element.
+  - `revert_names_the_document_by_path`: with two PDFs built in turn, each later build's revert carries its own PDF's path, never `document 1`.
   - `failed_build_opens_nothing`.
   - `path_with_spaces_and_bengali`: the path `/tmp/x/আমার গান/lesson 1.pdf` is one argv element.
   - `preview_uses_snacks_when_present` and `preview_falls_back`.
@@ -158,8 +159,8 @@ Everything under Global Constraints in the foundations plan applies. In addition
 
 **Interfaces:**
 - Consumes: the route recorded in `docs/spikes/playback.md`. With streaming: `swara play --port P FILE` and the FluidSynth start options and port rule (`9800 + (pid % 200)`, upward to the first free port) from that spike. Without it: the one-shot FluidSynth command from the same file.
-- Produces: `playback.play(buf)`. It uses `vim.b[buf].swara_midi`. The soundfont is `cfg.soundfont`, else MuseScore 4's `/Applications/MuseScore 4.app/Contents/Resources/sound/MS Basic.sf3` when it exists, else the message "Swara: set `soundfont` in Swara's options". With streaming, the first play starts FluidSynth with `-o synth.dynamic-sample-loading=1`, waits for its port with a `vim.uv` TCP connect retried every 50 ms for up to 5 s, then starts `swara play`. A play while another is running stops the older one first.
-- Produces: `playback.stop()`, which kills the `swara play` process, then sends `reset` on the shell port. Without streaming it kills the one-shot FluidSynth.
+- Produces: `playback.play(buf)`. It uses `vim.b[buf].swara_midi`. The soundfont is `cfg.soundfont`, else MuseScore 4's `/Applications/MuseScore 4.app/Contents/Resources/sound/MS Basic.sf3` when it exists, else the message "Swara: set `soundfont` in Swara's options". With streaming, the first play starts FluidSynth exactly as `docs/spikes/playback.md` gives it, `fluidsynth -s -i -o shell.port=<p> -o shell.prompt=<token> -o synth.dynamic-sample-loading=1 <soundfont>`, with the token `swara-<pid>-<port>>`. It connects with `vim.uv` TCP, retried every 50 ms, and takes the port only when the first bytes it receives are that token. The port counts as busy, and the player launched for it is killed before the next port up is tried, when something else answers first, when FluidSynth exits, when its stderr contains `bind`, or when 2 s pass without the token. Only then does it start `swara play`. A play while another is running stops the older one first.
+- Produces: `playback.stop()`, which kills the `swara play` process, then sends `gain 0` and `reset` on the shell port, in that order, because `reset` alone left sound for 122 ms on the song and 580 ms on a held organ note. The gain stays at zero until the next `swara play` sets it again. Without streaming it kills the one-shot FluidSynth.
 - Produces: a `VimLeavePre` autocommand that kills `swara play` and FluidSynth.
 - Produces: `musescore.open(buf)`, which runs `open -a 'MuseScore 4' <midi>` on macOS, and elsewhere the first of `mscore4`, `mscore` and `musescore` found on `PATH`.
 
@@ -167,7 +168,9 @@ Everything under Global Constraints in the foundations plan applies. In addition
   - `first_play_starts_fluidsynth_once` and `second_play_reuses_it`.
   - `play_twice_stops_first`: the first `swara play` pid is gone when the second starts.
   - `stop_while_loading`: `stop()` before the port opens leaves no `swara play` started and no Lua error.
-  - `stop_sends_reset`.
+  - `stop_sends_gain_zero_then_reset`: the fake port's last two lines are `gain 0` and `reset`, in that order.
+  - `port_answered_by_another_program_is_skipped`: the test's server on the first port sends `hello` on connect, so the plugin kills that player and starts the next one on the next port up.
+  - `fluidsynth_is_launched_with_its_token`: the logged argv carries `-o shell.prompt=swara-<pid>-<port>>` for the port it was given.
   - `quit_leaves_nothing`: a child `nvim --clean --headless` that plays and then quits leaves every logged pid failing `kill -0`.
   - `no_build_yet` says "Build the file first (save it)".
   - `real_play_times` runs only when `SWARA_REAL=1`. With the real FluidSynth and MS Basic, it prints the time from `play()` to the start of `swara play`, first and second time, for `docs/bench/speed.md`.
