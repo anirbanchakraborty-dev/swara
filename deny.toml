@@ -1,0 +1,26 @@
+# What `cargo deny check` accepts. Every crate here is also reviewed in docs/dependencies.md.
+
+[advisories]
+# Any advisory in the RustSec database fails the check unless it is listed, with a reason, here.
+ignore = []
+yanked = "deny"
+
+[licenses]
+# Permissive licences only, each compatible with Swara's MIT licence.
+allow = ["Apache-2.0", "ISC", "MIT", "Unicode-3.0", "Unlicense", "Zlib"]
+confidence-threshold = 0.93
+
+[licenses.private]
+# xtask is never published or shipped.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# The workspace crates depend on each other by path, and none of them is published.
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = ["https://github.com/anirbanchakraborty-dev/tree-sitter-lilypond"]

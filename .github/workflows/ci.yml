@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  RUST_VERSION: 1.98.0
+  LILYPOND_VERSION: 2.26.0
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            lilypond: linux-x86_64
+          - os: macos-latest
+            lilypond: darwin-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install "${RUST_VERSION}" --profile minimal
+          rustup default "${RUST_VERSION}"
+
+      - name: Cache LilyPond
+        id: lilypond-cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/lilypond
+          key: lilypond-${{ env.LILYPOND_VERSION }}-${{ matrix.lilypond }}
+
+      - name: Install LilyPond
+        if: steps.lilypond-cache.outputs.cache-hit != 'true'
+        env:
+          PLATFORM: ${{ matrix.lilypond }}
+        run: |
+          mkdir -p ~/lilypond
+          curl --fail --location --silent --show-error \
+            "https://gitlab.com/lilypond/lilypond/-/releases/v${LILYPOND_VERSION}/downloads/lilypond-${LILYPOND_VERSION}-${PLATFORM}.tar.gz" \
+            | tar -xz -C ~/lilypond --strip-components=1
+
+      - name: Put LilyPond on the path
+        run: |
+          echo "$HOME/lilypond/bin" >> "$GITHUB_PATH"
+
+      - name: Show the LilyPond version
+        run: lilypond --version | head -n 1
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+        with:
+          tool: cargo-deny
+
+      - name: Licences, advisories and sources
+        run: cargo deny check
+
+      - name: Tests
+        if: runner.os != 'macOS'
+        run: cargo test --locked --workspace
+
+      # The ignored tests measure speed against the real LilyPond, so they run on one platform only.
+      - name: Tests, with the ignored ones
+        if: runner.os == 'macOS'
+        run: cargo test --locked --workspace -- --include-ignored

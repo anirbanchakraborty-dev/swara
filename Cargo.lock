@@ -187,6 +187,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2b2231b7c3057d5e4ad0156fb3dc807d900806020c5ffa3ee6ff2c8c76fb8520"
 
 [[package]]
+name = "swara"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "swara-parser",
+ "tree-sitter",
+ "tree-sitter-lilypond",
+]
+
+[[package]]
+name = "swara-parser"
+version = "0.1.0"
+dependencies = [
+ "libloading",
+ "tree-sitter",
+ "tree-sitter-language",
+ "tree-sitter-lilypond",
+]
+
+[[package]]
 name = "syn"
 version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -215,6 +235,14 @@ name = "tree-sitter-language"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0af592be68c579aa78a16846bd19422978c3c52e438523d45ff5d1bff1f9d4a"
+
+[[package]]
+name = "tree-sitter-lilypond"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
+]
 
 [[package]]
 name = "unicode-ident"

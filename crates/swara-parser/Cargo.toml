@@ -1,0 +1,19 @@
+[package]
+name = "swara-parser"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Swara's LilyPond grammar as a shared library for Neovim"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# A path dependency until the grammar's v0.1.0 is tagged, then the git dependency pinned to it.
+tree-sitter-lilypond = { path = "../../../tree-sitter-lilypond" }
+
+[dev-dependencies]
+libloading = "0.9.0"
+tree-sitter = "0.27.1"
+tree-sitter-language = "0.1.9"
