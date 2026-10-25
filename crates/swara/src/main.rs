@@ -1,5 +1,6 @@
 mod commanddata;
 mod info;
+mod line_index;
 
 use std::process::ExitCode;
 
