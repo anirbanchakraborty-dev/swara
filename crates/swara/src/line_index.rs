@@ -1,9 +1,6 @@
 //! Converting between byte offsets in a document's text, LSP positions, and the line and column
 //! LilyPond prints in its messages.
 
-// The server loop is the first user, in the next task.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use lsp_types::Position;
 
 /// How an LSP position counts characters within a line.
@@ -59,6 +56,8 @@ impl LineIndex {
 
     /// LilyPond counts columns from 1, one per character, with a tab stop every 8 columns. A column
     /// past the end of the line means the end of the line.
+    // The LilyPond check is the first user, in a later task.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn lilypond_column_to_byte(&self, text: &str, line0: u32, col1: u32) -> usize {
         let Some((start, line)) = self.line(text, line0) else {
             return text.len();
