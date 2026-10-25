@@ -20,6 +20,7 @@
 {"k":"identifier","name":"default-language","kind":"string"}
 {"k":"identifier","name":"whiteTriangleMarkup","kind":"markup"}
 {"k":"identifier","name":"RemoveEmptyStaves","kind":"context-def"}
+{"k":"identifier","name":"\\^","kind":"music"}
 {"k":"grob","name":"NoteHead","interfaces":["grob-interface","note-head-interface"],"doc":"The head of a note."}
 {"k":"grob","name":"Stem","interfaces":["grob-interface","stem-interface"],"doc":"The line from a note head."}
 {"k":"grob","name":"StaffSymbol","interfaces":["grob-interface"],"doc":"The five lines."}

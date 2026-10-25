@@ -471,6 +471,20 @@ mod tests {
     }
 
     #[test]
+    fn punctuation_command_keeps_its_backslash() {
+        // LilyPond names `\^` with its backslash, so the lookup must too.
+        assert_eq!(messages("{ c4\\^ d \\% }"), ["unknown command `\\%`"]);
+    }
+
+    #[test]
+    fn punctuation_command_defined_by_a_string() {
+        assert_eq!(
+            messages("\"\\\\{\" = { c }\n{ d \\{ }"),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn variable_from_include_not_flagged() {
         let dir = Scratch::new("names-include");
         dir.write("defs.ily", "tune = { c }\n");

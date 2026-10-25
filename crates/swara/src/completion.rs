@@ -71,7 +71,7 @@ fn commands(
             Some(args) => (CompletionItemKind::FUNCTION, signature(args)),
             None => (CompletionItemKind::VARIABLE, None),
         };
-        offers.add(format!("\\{}", definition.name), kind, detail);
+        offers.add(node_text::spelled(&definition.name), kind, detail);
     }
     let Some(data) = data else {
         offers.keywords();
@@ -82,7 +82,7 @@ fn commands(
         for function in data.markups() {
             let detail = signature(&function.args);
             offers.add(
-                format!("\\{}", function.name),
+                node_text::spelled(&function.name),
                 CompletionItemKind::FUNCTION,
                 detail,
             );
@@ -91,7 +91,7 @@ fn commands(
         for function in data.music_functions() {
             let detail = signature(&function.args);
             offers.add(
-                format!("\\{}", function.name),
+                node_text::spelled(&function.name),
                 CompletionItemKind::FUNCTION,
                 detail,
             );
@@ -100,7 +100,7 @@ fn commands(
     }
     for (name, kind) in data.identifiers() {
         if (kind == IdentifierKind::Markup) == in_markup {
-            offers.add(format!("\\{name}"), CompletionItemKind::CONSTANT, None);
+            offers.add(node_text::spelled(name), CompletionItemKind::CONSTANT, None);
         }
     }
 }
@@ -376,6 +376,15 @@ mod tests {
         for label in ["\\bold", "\\whiteTriangleMarkup", "\\Staff", "Staff"] {
             assert!(!has(&labels, label), "{label} offered");
         }
+    }
+
+    #[test]
+    fn punctuation_names_offered_with_one_backslash() {
+        let labels = labels("\"\\\\{\" = { c }\n{ \\‸ }");
+        assert!(has(&labels, "\\^"), "`\\^` missing");
+        assert!(has(&labels, "\\{"), "`\\{{` missing");
+        let doubled: Vec<&String> = labels.iter().filter(|l| l.starts_with("\\\\")).collect();
+        assert!(doubled.is_empty(), "offered {doubled:?}");
     }
 
     #[test]

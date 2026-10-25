@@ -553,7 +553,7 @@ mod tests {
                 "musicFunctions": 8,
                 "markups": 5,
                 "markupLists": 1,
-                "identifiers": 7,
+                "identifiers": 8,
                 "grobs": 3,
                 "interfaces": 3,
                 "backendProperties": 5,

@@ -13,13 +13,26 @@ pub fn string(node: Node, source: &str) -> String {
     unquote(text(node, source))
 }
 
-/// The name a `command` node spells, without its backslash. `\"my var"` is `my var`.
+/// The name a `command` node spells, without its backslash. `\"my var"` is `my var`. A single
+/// character that is not a letter keeps it, since LilyPond names `\=` and `\^` that way.
 pub fn command(node: Node, source: &str) -> String {
-    let name = text(node, source).strip_prefix('\\').unwrap_or_default();
-    if name.starts_with('"') {
-        unquote(name)
-    } else {
+    let spelled = text(node, source);
+    let name = spelled.strip_prefix('\\').unwrap_or_default();
+    let mut chars = name.chars();
+    match (chars.next(), chars.next()) {
+        (Some('"'), _) => unquote(name),
+        (Some(c), None) if !c.is_alphabetic() => spelled.to_owned(),
+        _ => name.to_owned(),
+    }
+}
+
+/// How a command named `name` is typed: with one backslash before it, unless the name holds its
+/// own, as `\=` does.
+pub fn spelled(name: &str) -> String {
+    if name.starts_with('\\') {
         name.to_owned()
+    } else {
+        format!("\\{name}")
     }
 }
 
@@ -70,5 +83,8 @@ mod tests {
         let doc = document(None, r"{ \melody }");
         let plain = first(doc.tree.root_node(), "command").unwrap();
         assert_eq!(command(plain, &doc.text), "melody");
+        let doc = document(None, r"{ c\= 1 }");
+        let punctuation = first(doc.tree.root_node(), "command").unwrap();
+        assert_eq!(command(punctuation, &doc.text), r"\=");
     }
 }
