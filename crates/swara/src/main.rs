@@ -2,6 +2,7 @@ mod commanddata;
 mod diagnostics;
 mod document;
 mod info;
+mod lilypond;
 mod line_index;
 mod server;
 
