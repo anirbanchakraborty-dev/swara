@@ -105,6 +105,7 @@ function T.conform_takes_over()
     '{ c4  d |e }\n',
     [[
     package.loaded.conform = {
+      formatters_by_ft = { lilypond = { 'fake' } },
       list_formatters_to_run = function(bufnr)
         assert(bufnr == buf, 'conform was asked about buffer ' .. tostring(bufnr))
         return { { name = 'fake', available = true } }, false
@@ -126,6 +127,27 @@ function T.conform_without_formatter_tidies()
     package.loaded.conform = {
       list_formatters_to_run = function()
         return {}, false
+      end,
+    }
+    vim.cmd('silent write')
+    return {}
+  ]]
+  )
+  assert(h.read(file) == '{ c4 d | e }\n', vim.inspect(h.read(file)))
+  assert_quiet(out)
+end
+
+function T.conform_catch_all_still_tidies()
+  -- A formatter conform runs on every filetype, such as a whitespace trimmer under `*` or `_`, is
+  -- not a LilyPond formatter, so Swara still tidies.
+  local out, file = with_server(
+    {},
+    '{ c4  d |e }\n',
+    [[
+    package.loaded.conform = {
+      formatters_by_ft = { ['*'] = { 'trim_whitespace' }, _ = { 'trim_newlines' } },
+      list_formatters_to_run = function()
+        return { { name = 'trim_whitespace', available = true } }, false
       end,
     }
     vim.cmd('silent write')
