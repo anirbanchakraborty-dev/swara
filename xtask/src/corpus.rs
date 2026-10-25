@@ -240,7 +240,7 @@ fn convert_and_run<R: Runner>(
 pub struct LilyPond {
     pub lilypond: PathBuf,
     pub convert_ly: PathBuf,
-    /// `assets/lilypond/check-settings.ly`, as an absolute path.
+    /// `crates/swara/assets/lilypond/check-settings.ly`, as an absolute path.
     pub settings: PathBuf,
     /// Where `-o` points. The check settings never write output, so it stays empty.
     pub tmp: PathBuf,
@@ -529,7 +529,7 @@ pub fn run_filter(root: &Path, jobs: usize, timeout: Duration) -> Result<(), Str
     let runner = LilyPond {
         lilypond: "lilypond".into(),
         convert_ly: "convert-ly".into(),
-        settings: root.join("assets/lilypond/check-settings.ly"),
+        settings: root.join("crates/swara/assets/lilypond/check-settings.ly"),
         tmp: tmp.clone(),
         serial: AtomicUsize::new(0),
     };
@@ -704,7 +704,7 @@ pub fn broken_verify(root: &Path) -> Result<(), String> {
     require_lilypond()?;
     let dir = root.join("bench/broken");
     let mut settings = OsString::from("-dinclude-settings=");
-    settings.push(root.join("assets/lilypond/check-settings.ly"));
+    settings.push(root.join("crates/swara/assets/lilypond/check-settings.ly"));
     let tmp = std::env::temp_dir().join(format!("swara-broken-{}", std::process::id()));
     fs::create_dir_all(&tmp).map_err(io_err(&tmp))?;
     let stderr_of = |file: &Path| -> io::Result<String> {
@@ -1129,7 +1129,7 @@ mod tests {
         let settings = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
-            .join("assets/lilypond/check-settings.ly");
+            .join("crates/swara/assets/lilypond/check-settings.ly");
         let mut arg = std::ffi::OsString::from("-dinclude-settings=");
         arg.push(&settings);
         let mut child = Command::new("lilypond")

@@ -109,6 +109,27 @@ pub fn check_spec(
     include_paths: &[PathBuf],
 ) -> io::Result<RunSpec> {
     let dir = work_dir()?;
+    Ok(check_spec_in(
+        &dir,
+        uri,
+        lilypond,
+        file,
+        text,
+        version,
+        include_paths,
+    ))
+}
+
+/// `check_spec` with the settings file and output under `dir`.
+fn check_spec_in(
+    dir: &Path,
+    uri: &Uri,
+    lilypond: &Path,
+    file: &Path,
+    text: &str,
+    version: i32,
+    include_paths: &[PathBuf],
+) -> RunSpec {
     let out_dir = dir.join(format!("run-{}", next_number()));
     let mut settings = OsString::from("-dinclude-settings=");
     settings.push(dir.join(SETTINGS_NAME));
@@ -131,14 +152,14 @@ pub fn check_spec(
             .into(),
     );
     args.push("-".into());
-    Ok(RunSpec {
+    RunSpec {
         kind: RunKind::Check,
         uri: uri.clone(),
         version,
         stdin: Some(text.to_owned()),
         args,
         out_dir,
-    })
+    }
 }
 
 /// Starts a run. Its result arrives on `results` once its standard error closes, which is when it
@@ -333,6 +354,44 @@ mod tests {
             "{envs:?}"
         );
         assert!(envs.contains(&("LANGUAGE".as_ref(), None)), "{envs:?}");
+    }
+
+    #[test]
+    #[ignore = "runs the real LilyPond"]
+    fn midi_only_score_with_its_own_context_is_clean() {
+        // The score's only output is MIDI, and it defines its own staff there. LilyPond builds it
+        // without a word, so the check must stay quiet too.
+        let text = "\\version \"2.26.0\"\n\\score {\n  \\new MyStaff { c'4 }\n  \\midi {\n    \
+                    \\context { \\Staff \\name MyStaff \\alias Staff }\n    \
+                    \\context { \\Score \\accepts MyStaff }\n  }\n}\n";
+        let lilypond = crate::info::Lilypond::find().expect("LilyPond on PATH");
+        let base = base("midi-only");
+        let file = base.join("midi.ly");
+        let uri: Uri = format!("file://{}", file.display()).parse().unwrap();
+        // A folder of its own, since other tests share this process's work folder.
+        let dir = make_work_dir(&base).unwrap();
+        let spec = check_spec_in(&dir, &uri, &lilypond.path, &file, text, 1, &[]);
+        fs::create_dir_all(&spec.out_dir).unwrap();
+        let mut child = english(&mut Command::new(&spec.args[0]))
+            .args(&spec.args[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(text.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        fs::remove_dir_all(base).unwrap();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !stderr.contains("warning") && !stderr.contains("error"),
+            "{stderr}"
+        );
     }
 
     #[test]

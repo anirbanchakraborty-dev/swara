@@ -7,7 +7,7 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 fixtures=$repo/tests/fixtures/lilypond
-settings=$repo/assets/lilypond/check-settings.ly
+settings=$repo/crates/swara/assets/lilypond/check-settings.ly
 out=${TMPDIR:-/tmp}
 out=${out%/}/swara-check-record
 mkdir -p "$out"

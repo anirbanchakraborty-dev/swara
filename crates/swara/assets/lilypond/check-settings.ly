@@ -1,13 +1,18 @@
 \version "2.26.0"
-%% The settings for the Swara check, loaded with -dinclude-settings. Chosen in docs/spikes/lilypond-check.md.
-%% Every score is interpreted under its own layout definition with every engraver taken out of
-%% every context. Contexts the score defines still exist and timing still runs, so bar checks are
-%% reported; nothing is laid out and nothing is written.
+%% Swara check settings, loaded with -dinclude-settings (candidate B of the check spike).
+%% Every score is interpreted under its own layout definition, or under its MIDI definition when
+%% that is its only output, with every engraver taken out of every context. Contexts the score
+%% defines still exist and timing still runs, so bar checks are reported; nothing is laid out and
+%% nothing is written.
 
-#(define (swara-layout-def? def)
+#(define (swara-score-group? def group)
    (let ((score (assq 'Score (ly:output-find-context-def def))))
      (and score
-          (eq? (ly:context-def-lookup (cdr score) 'group-type) 'Score_engraver))))
+          (eq? (ly:context-def-lookup (cdr score) 'group-type) group))))
+
+#(define (swara-layout-def? def) (swara-score-group? def 'Score_engraver))
+
+#(define (swara-midi-def? def) (swara-score-group? def 'Score_performer))
 
 #(define (swara-engraver? name)
    (or (not (symbol? name))
@@ -31,8 +36,10 @@
    (if (and (ly:score? score) (not (ly:score-error? score)))
        (ly:run-translator (ly:score-music score)
                           (swara-without-engravers
-                           (or (find swara-layout-def? (ly:score-output-defs score))
-                               $defaultlayout)))))
+                           (let ((defs (ly:score-output-defs score)))
+                             (or (find swara-layout-def? defs)
+                                 (find swara-midi-def? defs)
+                                 $defaultlayout))))))
 
 #(define (swara-check-book book)
    (for-each swara-check-score (ly:book-scores book))

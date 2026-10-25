@@ -4,7 +4,7 @@ The server checks a file each time typing pauses, and the design gives that chec
 
 ## The verdict
 
-Candidate B wins. It reports every message that does not need engraving, at the right line, in 219 ms on the 100-bar song, inside the 0.27 s budget. It is now `assets/lilypond/check-settings.ly`, which the server embeds. The command the server runs, with the buffer's text on stdin, is this one argument list:
+Candidate B wins. It reports every message that does not need engraving, at the right line, in 219 ms on the 100-bar song, inside the 0.27 s budget. It is now `crates/swara/assets/lilypond/check-settings.ly`, which the server embeds. The command the server runs, with the buffer's text on stdin, is this one argument list:
 
 ```bash
 LC_ALL=C lilypond -l WARNING -dinclude-settings=<abs>/check-settings.ly -I <abs dir> -o <abs tmp>/<stem> -

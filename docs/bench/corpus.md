@@ -34,7 +34,7 @@ A fifth source, **lessons**, is copied from the folder named by `SWARA_LESSONS_D
 LC_ALL=C lilypond -l WARNING -dinclude-settings=<abs>/check-settings.ly -I <abs dir> -o <abs tmp>/<n> <file>
 ```
 
-The command runs from the file's own folder, with that folder on the include path, so `\include` statements resolve exactly as they do when the file is built. `check-settings.ly` is `assets/lilypond/check-settings.ly`, which stops LilyPond before it engraves anything. Each run gets 60 s before it is killed. The filter refuses to start unless `lilypond --version` reports GNU LilyPond 2.26.0.
+The command runs from the file's own folder, with that folder on the include path, so `\include` statements resolve exactly as they do when the file is built. `check-settings.ly` is `crates/swara/assets/lilypond/check-settings.ly`, which stops LilyPond before it engraves anything. Each run gets 60 s before it is killed. The filter refuses to start unless `lilypond --version` reports GNU LilyPond 2.26.0.
 
 Each file lands in one of four classes. A file the check passes, with exit status 0, is **accepted**. A file that fails is copied to a working file beside the original, `convert-ly -e` updates the copy to current syntax, and the copy is checked again. If it now passes, the file is **converted**, and the updated text is what goes into the corpus. If it still fails, it is **rejected**. A file whose check, or whose second check after conversion, runs past the limit is **timeout**. Accepted and converted files are copied into `bench/corpus/accepted/<source>/`, rejected ones into `rejected/`, and timeouts into `timeout/`, each keeping its path below its source folder. For a converted file the manifest records the SHA-256 of both the original and the updated text.
 
