@@ -22,7 +22,7 @@ use lsp_types::request::{
 };
 use lsp_types::{
     CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticSeverity,
-    DidChangeTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse,
+    DidChangeTextDocumentParams, DocumentFormattingParams, DocumentSymbolParams, DocumentSymbolResponse,
     GotoDefinitionParams, GotoDefinitionResponse, Range,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, ExecuteCommandOptions,
     HoverParams, HoverProviderCapability, InitializeParams, InitializeResult, LogMessageParams, MessageType,
@@ -38,6 +38,7 @@ use tree_sitter::{Node, Parser};
 use crate::commanddata::{self, CommandData};
 use crate::completion;
 use crate::definition;
+use crate::format::{self, FormatOutcome};
 use crate::diagnostics::{self, Layers, includes, names, syntax};
 use crate::document::Document;
 use crate::file_uri;
@@ -387,8 +388,28 @@ impl<'c> Server<'c> {
                     Err(error) => invalid(id, &error.to_string()),
                 }
             }
-            Formatting::METHOD
-            | ExecuteCommand::METHOD => Response::new_ok(id, Value::Null),
+            Formatting::METHOD => {
+                match serde_json::from_value::<DocumentFormattingParams>(request.params) {
+                    Ok(params) => {
+                        let indent = params.options.tab_size as usize;
+                        let edits = self.documents.get(&params.text_document.uri).and_then(|doc| {
+                            match format::format(&doc.text, indent, &mut self.parser) {
+                                FormatOutcome::Unchanged => Some(Vec::new()),
+                                FormatOutcome::Changed(new) => Some(format::line_edits(
+                                    &doc.text,
+                                    &doc.index,
+                                    &new,
+                                    self.encoding,
+                                )),
+                                FormatOutcome::Refused(_) => None,
+                            }
+                        });
+                        Response::new_ok(id, edits)
+                    }
+                    Err(error) => invalid(id, &error.to_string()),
+                }
+            }
+            ExecuteCommand::METHOD => Response::new_ok(id, Value::Null),
             method => Response::new_err(
                 id,
                 ErrorCode::MethodNotFound as i32,

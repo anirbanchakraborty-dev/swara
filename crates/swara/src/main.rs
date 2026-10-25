@@ -5,6 +5,7 @@ mod definition;
 mod diagnostics;
 mod document;
 mod file_uri;
+mod format;
 mod hover;
 mod index;
 mod info;
@@ -28,6 +29,14 @@ fn main() -> ExitCode {
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     match args.as_slice() {
         ["lsp"] => server::run(),
+        ["format"] => format::stdin(2),
+        ["format", "--indent", width] => match width.parse() {
+            Ok(width) => format::stdin(width),
+            Err(_) => {
+                eprintln!("{USAGE}");
+                ExitCode::from(2)
+            }
+        },
         ["info"] => {
             println!("{}", info::info());
             ExitCode::SUCCESS
