@@ -76,7 +76,7 @@ Zero gain stays set after the stop, so the next playback has to send `gain <valu
 
 ## Reproducing
 
-`spikes/playback/run.py` launches the players, finds the ports, runs `cargo xtask spike-play` and measures the WAV files. It is run from the repository root with `python3 -I`, and writes its scratch files to `$TMPDIR/swara-playback-spike`.
+`spikes/playback/run.py` launches the players, finds the ports, runs `cargo xtask spike-play` and measures the WAV files. It is run from the repository root with `python3 -I`, and writes its scratch files to `$TMPDIR/swara-playback-spike`. The `spike-play` command was removed from `xtask` once `swara play` replaced it, so the harness runs as written only at a commit from before that change, such as `5af27a4`.
 
 ```bash
 python3 -I spikes/playback/run.py cold 5

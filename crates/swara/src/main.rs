@@ -13,6 +13,7 @@ mod info;
 mod lilypond;
 mod line_index;
 mod node_text;
+mod play;
 mod server;
 mod symbols;
 #[cfg(test)]
@@ -23,6 +24,7 @@ use std::process::ExitCode;
 const USAGE: &str = "usage: swara lsp
        swara format [--indent <n>]
        swara info
+       swara play --port <p> [--gain <g>] <file.midi>
        swara --version";
 
 fn main() -> ExitCode {
@@ -42,6 +44,7 @@ fn main() -> ExitCode {
             println!("{}", info::info());
             ExitCode::SUCCESS
         }
+        ["play", options @ ..] => play::main(options),
         ["--version"] => {
             println!("swara {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS

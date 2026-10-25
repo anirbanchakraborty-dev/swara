@@ -10,6 +10,9 @@ Run from the repository root with python3 -I:
     run.py stops                compare candidate stop commands on a held organ note
 
 Scratch output goes to $TMPDIR/swara-playback-spike.
+
+The spike-play command was removed from xtask once swara play replaced it, so this harness
+runs as written only at a commit from before that change, such as 5af27a4.
 """
 
 import math

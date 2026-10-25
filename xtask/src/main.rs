@@ -3,15 +3,12 @@ mod corpus;
 mod dyn_grammar;
 mod gen_song;
 mod sha256;
-mod smf;
-mod spike_play;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
-       cargo xtask spike-play --port <p> [--stop-after <ms>] <file.midi>
        cargo xtask corpus fetch
        cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]
        cargo xtask broken verify
@@ -32,8 +29,6 @@ fn main() -> ExitCode {
                 ExitCode::from(2)
             }
         },
-        ["spike-play", "--port", p, file] => spike_play(p, None, file),
-        ["spike-play", "--port", p, "--stop-after", ms, file] => spike_play(p, Some(ms), file),
         ["corpus", "fetch"] => report(corpus::fetch(&root())),
         ["corpus", "filter", options @ ..] => corpus_filter(options),
         ["broken", "verify"] => report(corpus::broken_verify(&root())),
@@ -41,28 +36,6 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
-        }
-    }
-}
-
-fn spike_play(port: &str, stop_after: Option<&str>, file: &str) -> ExitCode {
-    let Ok(port) = port.parse::<u16>() else {
-        eprintln!("--port takes a TCP port number, not {port:?}");
-        return ExitCode::from(2);
-    };
-    let stop_after = match stop_after.map(str::parse::<u64>) {
-        None => None,
-        Some(Ok(ms)) => Some(Duration::from_millis(ms)),
-        Some(Err(_)) => {
-            eprintln!("--stop-after takes whole milliseconds");
-            return ExitCode::from(2);
-        }
-    };
-    match spike_play::run(port, Path::new(file), stop_after) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprintln!("{e}");
-            ExitCode::FAILURE
         }
     }
 }

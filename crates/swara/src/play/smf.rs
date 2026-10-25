@@ -1,4 +1,4 @@
-//! A minimal Standard MIDI File reader, formats 0 and 1, for the playback spike. It keeps the channel
+//! A minimal Standard MIDI File reader, formats 0 and 1, for `swara play`. It keeps the channel
 //! messages FluidSynth's shell can take as live events and turns ticks into wall-clock offsets.
 
 use std::fmt;
