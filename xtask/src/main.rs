@@ -1,4 +1,6 @@
+mod compare;
 mod corpus;
+mod dyn_grammar;
 mod gen_song;
 mod sha256;
 mod smf;
@@ -12,7 +14,9 @@ const USAGE: &str = "usage: cargo xtask gen-song --bars <n>
        cargo xtask spike-play --port <p> [--stop-after <ms>] <file.midi>
        cargo xtask corpus fetch
        cargo xtask corpus filter [--jobs <n>] [--timeout-secs <s>]
-       cargo xtask broken verify";
+       cargo xtask broken verify
+       cargo xtask compare --name <n> [--commit <sha>] --lib <dylib> --symbol <sym>
+                   [--inject-lib <dylib> --inject-symbol <sym> --inject-query <scm>] --out <json>";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -33,6 +37,7 @@ fn main() -> ExitCode {
         ["corpus", "fetch"] => report(corpus::fetch(&root())),
         ["corpus", "filter", options @ ..] => corpus_filter(options),
         ["broken", "verify"] => report(corpus::broken_verify(&root())),
+        ["compare", options @ ..] => compare(options),
         _ => {
             eprintln!("{USAGE}");
             ExitCode::from(2)
@@ -99,4 +104,56 @@ fn corpus_filter(options: &[&str]) -> ExitCode {
         jobs,
         Duration::from_secs(timeout_secs),
     ))
+}
+
+fn compare(options: &[&str]) -> ExitCode {
+    let mut values = std::collections::BTreeMap::new();
+    for pair in options.chunks(2) {
+        match pair {
+            [flag, value] if flag.starts_with("--") => {
+                values.insert(&flag[2..], value.to_string());
+            }
+            _ => {
+                eprintln!("{USAGE}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    let mut take = |key: &str| values.remove(key);
+    let (Some(name), Some(lib), Some(symbol), Some(out)) =
+        (take("name"), take("lib"), take("symbol"), take("out"))
+    else {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let commit = take("commit");
+    let inject = match (
+        take("inject-lib"),
+        take("inject-symbol"),
+        take("inject-query"),
+    ) {
+        (None, None, None) => None,
+        (Some(lib), Some(symbol), Some(query)) => Some(compare::Inject {
+            lib: lib.into(),
+            symbol,
+            query: query.into(),
+        }),
+        _ => {
+            eprintln!("--inject-lib, --inject-symbol and --inject-query go together\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    if !values.is_empty() {
+        eprintln!("{USAGE}");
+        return ExitCode::from(2);
+    }
+    let options = compare::Options {
+        name,
+        commit,
+        lib: lib.into(),
+        symbol,
+        inject,
+        out: out.into(),
+    };
+    report(compare::run(&root(), &options))
 }

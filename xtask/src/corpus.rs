@@ -145,7 +145,7 @@ fn hidden(name: &std::ffi::OsStr) -> bool {
     name.as_encoded_bytes().starts_with(b".")
 }
 
-fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
+pub(crate) fn collect(dir: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
     for item in fs::read_dir(dir)? {
         let item = item?;
         if hidden(&item.file_name()) {
@@ -340,7 +340,7 @@ pub fn manifest_json(entries: &[Entry], mutopia_commit: &str, timeout_secs: u64)
     )
 }
 
-fn json_str(s: &str) -> String {
+pub(crate) fn json_str(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
