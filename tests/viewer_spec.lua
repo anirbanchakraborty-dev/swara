@@ -143,8 +143,11 @@ function T.first_build_opens_in_background()
 end
 
 function T.second_build_refreshes_per_spike()
-  local file = pdf('second', 'score.pdf')
-  -- The temporary folder is reached through a link, so the resolved path differs from the given one.
+  -- The file is reached through a link, so the resolved path differs from the given one. The test
+  -- makes the link itself, because only macOS reaches its temporary folder through one.
+  local link = h.tmpdir() .. '/second'
+  assert(vim.uv.fs_symlink(vim.fs.dirname(pdf('second', 'score.pdf')), link))
+  local file = link .. '/score.pdf'
   assert(vim.uv.fs_realpath(file) ~= file, 'the test needs a path that resolves to another')
   local cases = {
     { prefs = { SKAutoCheckFileUpdate = '1', SKAutoReloadFileUpdate = '1' }, reverts = false },
