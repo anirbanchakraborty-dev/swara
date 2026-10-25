@@ -68,6 +68,24 @@ local function curl_reason(out)
   return line ~= '' and line or ('curl exited %d'):format(out.code)
 end
 
+--- Downloads `url` to `dest`. curl alone waits for ever on a server that stops sending, so it gives
+--- up after 15 s without a connection, or 30 s in a row under 1 KB/s.
+local function fetch(url, dest, callback)
+  run({
+    'curl',
+    '-fsSL',
+    '--connect-timeout',
+    '15',
+    '--speed-limit',
+    '1024',
+    '--speed-time',
+    '30',
+    '-o',
+    dest,
+    url,
+  }, callback)
+end
+
 --- The checksum `SHA256SUMS` gives for `name`, or nil.
 local function listed_sum(sums, name)
   for _, line in ipairs(vim.fn.readfile(sums)) do
@@ -99,11 +117,11 @@ local function download(callback)
   vim.fn.delete(partial, 'rf')
   vim.fn.mkdir(partial, 'p')
   vim.notify(('Swara: downloading swara %s for %s'):format(version, triple), vim.log.levels.INFO)
-  run({ 'curl', '-fsSL', '-o', sums, base .. 'SHA256SUMS' }, function(got_sums)
+  fetch(base .. 'SHA256SUMS', sums, function(got_sums)
     if got_sums.code ~= 0 then
       return fail(curl_reason(got_sums))
     end
-    run({ 'curl', '-fsSL', '-o', archive, base .. archive_name }, function(got_archive)
+    fetch(base .. archive_name, archive, function(got_archive)
       if got_archive.code ~= 0 then
         return fail(curl_reason(got_archive))
       end

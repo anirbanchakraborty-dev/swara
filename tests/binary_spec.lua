@@ -136,6 +136,37 @@ function T.offline_message_once()
   assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
 end
 
+function T.stalled_download_gives_up()
+  -- curl as it meets a server that stops sending: given limits on the connection and on a transfer
+  -- that slows to a crawl, it gives up with exit 28, and given none it waits on for ever.
+  local curl = h.fake_bin(
+    'curl',
+    [[
+limits=0
+for arg in "$@"; do
+  case "$arg" in --connect-timeout|--speed-limit|--speed-time) limits=$((limits + 1)) ;; esac
+done
+if [ "$limits" -eq 3 ]; then
+  echo 'curl: (28) Operation too slow. Less than 1024 bytes/sec transferred the last 30 seconds' >&2
+  exit 28
+fi
+exec sleep 60]]
+  )
+  local data = h.tmpdir()
+  local got = resolve({
+    data = data,
+    path = vim.fn.fnamemodify(curl, ':h') .. ':' .. SYSTEM_PATH,
+    base = 'https://example.invalid',
+  })
+  assert(got.first.got == nil, vim.inspect(got.first.got))
+  assert(got.first.message:find('Operation too slow', 1, true), got.first.message)
+  local failures = vim.tbl_filter(function(note)
+    return note.message:find('download failed', 1, true) ~= nil
+  end, got.notes)
+  assert(#failures == 1, vim.inspect(got.notes))
+  assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
+end
+
 function T.partial_never_used()
   local data = h.tmpdir()
   local marker = h.tmpdir() .. '/ran'
