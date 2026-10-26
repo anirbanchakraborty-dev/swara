@@ -2,7 +2,9 @@ local h = require('helpers')
 
 local T = {}
 
-local INFO = '{"version":"0.1.0","grammar":null,"grammar_symbol":"lilypond_swara",'
+-- The plugin downloads the release named after its own version, so the fake release follows it.
+local VERSION = require('swara.version')
+local INFO = '{"version":"' .. VERSION .. '","grammar":null,"grammar_symbol":"lilypond_swara",'
   .. '"grammar_rev":"test","abi":15,"lilypond":null,"cache":null}'
 local PRINT_INFO = "printf '%s\\n' '" .. INFO .. "'"
 -- Holds `curl` and `tar` on macOS and Linux, and no `swara`.
@@ -23,9 +25,9 @@ end
 local function release(opts)
   opts = opts or {}
   local root = h.tmpdir()
-  local name = 'swara-0.1.0-' .. triple()
+  local name = 'swara-' .. VERSION .. '-' .. triple()
   executable(root .. '/stage/' .. name .. '/bin/swara', PRINT_INFO)
-  local folder = root .. '/v0.1.0'
+  local folder = root .. '/v' .. VERSION
   vim.fn.mkdir(folder, 'p')
   local archive = folder .. '/' .. name .. '.tar.gz'
   local tar = vim.system({ 'tar', '-czf', archive, '-C', root .. '/stage', name }):wait()
@@ -33,7 +35,7 @@ local function release(opts)
   local sum = opts.sum or vim.fn.sha256(vim.fn.readblob(archive))
   h.write(
     folder .. '/SHA256SUMS',
-    ('%s  swara-0.1.0-other-platform.tar.gz\n%s  %s.tar.gz\n'):format(string.rep('0', 64), sum, name)
+    ('%s  swara-%s-other-platform.tar.gz\n%s  %s.tar.gz\n'):format(string.rep('0', 64), VERSION, sum, name)
   )
   return 'file://' .. root
 end
@@ -78,7 +80,7 @@ function T.prefers_path()
   local found = assert(got.first.got, vim.inspect(got))
   assert(found.source == 'path', found.source)
   assert(same_file(found.path, exe), found.path)
-  assert(found.info.version == '0.1.0' and found.info.grammar_symbol == 'lilypond_swara', vim.inspect(found.info))
+  assert(found.info.version == VERSION and found.info.grammar_symbol == 'lilypond_swara', vim.inspect(found.info))
   assert(#got.notes == 0, vim.inspect(got.notes))
 end
 
@@ -86,14 +88,14 @@ function T.downloads_and_verifies()
   local data = h.tmpdir()
   local got = resolve({ data = data, base = release(), twice = true })
   local found = assert(got.first.got, vim.inspect(got))
-  local want = data .. '/nvim/swara/0.1.0/bin/swara'
+  local want = data .. '/nvim/swara/' .. VERSION .. '/bin/swara'
   assert(found.source == 'download', found.source)
   assert(same_file(found.path, want), found.path)
   assert(vim.fn.executable(want) == 1, want .. ' is not executable')
-  assert(found.info.version == '0.1.0', vim.inspect(found.info))
-  assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
+  assert(found.info.version == VERSION, vim.inspect(found.info))
+  assert(not exists(data .. '/nvim/swara/' .. VERSION .. '.partial'), 'the .partial folder was left behind')
   assert(#got.notes == 2, vim.inspect(got.notes))
-  assert(got.notes[1].message == 'Swara: downloading swara 0.1.0 for ' .. triple(), got.notes[1].message)
+  assert(got.notes[1].message == 'Swara: downloading swara ' .. VERSION .. ' for ' .. triple(), got.notes[1].message)
   assert(got.notes[2].message == 'Swara: ready', got.notes[2].message)
   local again = assert(got.second.got, vim.inspect(got.second))
   assert(again.source == 'download' and same_file(again.path, want), vim.inspect(again))
@@ -106,7 +108,7 @@ function T.uses_earlier_download()
   local got = resolve({ data = data, base = 'file:///nowhere' })
   local found = assert(got.first.got, vim.inspect(got))
   assert(found.source == 'download', found.source)
-  assert(same_file(found.path, data .. '/nvim/swara/0.1.0/bin/swara'), found.path)
+  assert(same_file(found.path, data .. '/nvim/swara/' .. VERSION .. '/bin/swara'), found.path)
   assert(#got.notes == 0, vim.inspect(got.notes))
 end
 
@@ -115,8 +117,8 @@ function T.bad_checksum_refused()
   local got = resolve({ data = data, base = release({ sum = string.rep('1', 64) }) })
   assert(got.first.got == nil, vim.inspect(got.first.got))
   assert(got.first.message:find('checksum', 1, true), got.first.message)
-  assert(not exists(data .. '/nvim/swara/0.1.0'), 'the refused archive was installed')
-  assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
+  assert(not exists(data .. '/nvim/swara/' .. VERSION), 'the refused archive was installed')
+  assert(not exists(data .. '/nvim/swara/' .. VERSION .. '.partial'), 'the .partial folder was left behind')
   local last = got.notes[#got.notes].message
   assert(last:find('Swara: download failed (', 1, true) and last:find('checksum', 1, true), last)
 end
@@ -133,7 +135,7 @@ function T.offline_message_once()
   assert(message:find('LilyPond files stay plain text until the next start', 1, true), message)
   assert(got.second.notes == got.first.notes, 'the second buffer gave a message: ' .. vim.inspect(got.notes))
   assert(got.second.message, 'the second lookup gave no reason')
-  assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
+  assert(not exists(data .. '/nvim/swara/' .. VERSION .. '.partial'), 'the .partial folder was left behind')
 end
 
 function T.stalled_download_gives_up()
@@ -164,13 +166,13 @@ exec sleep 60]]
     return note.message:find('download failed', 1, true) ~= nil
   end, got.notes)
   assert(#failures == 1, vim.inspect(got.notes))
-  assert(not exists(data .. '/nvim/swara/0.1.0.partial'), 'the .partial folder was left behind')
+  assert(not exists(data .. '/nvim/swara/' .. VERSION .. '.partial'), 'the .partial folder was left behind')
 end
 
 function T.partial_never_used()
   local data = h.tmpdir()
   local marker = h.tmpdir() .. '/ran'
-  local partial = data .. '/nvim/swara/0.1.0.partial'
+  local partial = data .. '/nvim/swara/' .. VERSION .. '.partial'
   executable(partial .. '/bin/swara', 'touch ' .. marker .. '\n' .. PRINT_INFO)
   h.write(partial .. '/bin/left-over', 'from an earlier attempt\n')
   local got = resolve({ data = data, base = release() })
@@ -178,7 +180,7 @@ function T.partial_never_used()
   assert(found.source == 'download', found.source)
   assert(not exists(marker), 'the binary in the leftover .partial folder was run')
   assert(not exists(partial), 'the .partial folder was left behind')
-  assert(not exists(data .. '/nvim/swara/0.1.0/bin/left-over'), 'the leftover .partial folder was reused')
+  assert(not exists(data .. '/nvim/swara/' .. VERSION .. '/bin/left-over'), 'the leftover .partial folder was reused')
 end
 
 return T
